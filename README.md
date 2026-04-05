@@ -7,9 +7,10 @@ Chat with OpenAI, Anthropic (Claude), Google Gemini, Perplexity, Groq, or local 
 - **Multi-provider**: OpenAI, Anthropic, Gemini, Perplexity, Groq, Ollama (local)
 - **Real-time streaming**: responses print as they are generated
 - **Multi-turn chat**: full conversation history in interactive REPL mode
+- **Session persistence**: save, load, and resume conversations across restarts
 - **Single-shot queries**: pipe-friendly one-liner mode
 - **Config file**: store API keys and defaults in `~/.config/mayai/config.toml`
-- **In-chat commands**: switch provider mid-conversation, clear history, list models
+- **In-chat commands**: switch provider mid-conversation, save/load sessions, list models
 
 ## Requirements
 
@@ -22,9 +23,11 @@ Chat with OpenAI, Anthropic (Claude), Google Gemini, Perplexity, Groq, or local 
 pip install mayai
 ```
 
-Or install from source (this repo):
+Or install from source:
 
 ```bash
+git clone https://github.com/viktoras-mayberry/cli-ai
+cd cli-ai
 pip install .
 ```
 
@@ -84,33 +87,55 @@ mayai -p perplexity "What happened in tech news today?"
 
 ## Providers & Models
 
-| Provider    | Command flag       | Models                                                               |
-|-------------|--------------------|----------------------------------------------------------------------|
-| OpenAI      | `-p openai`        | gpt-4o, gpt-4o-mini, gpt-4-turbo, o1, o3-mini, …                   |
-| Anthropic   | `-p anthropic`     | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5, …             |
-| Gemini      | `-p gemini`        | gemini-2.0-flash, gemini-1.5-pro, gemini-1.5-flash, …               |
-| Perplexity  | `-p perplexity`    | sonar-pro, sonar-reasoning-pro, sonar-reasoning, sonar               |
-| Groq        | `-p groq`          | llama-3.3-70b-versatile, mixtral-8x7b-32768, gemma2-9b-it, …        |
-| Ollama      | `-p ollama`        | Any model pulled locally (llama3.2, mistral, codellama, …)           |
+| Provider   | Flag            | Models                                                         |
+|------------|-----------------|----------------------------------------------------------------|
+| OpenAI     | `-p openai`     | gpt-4o, gpt-4o-mini, gpt-4-turbo, o1, o3-mini, ...           |
+| Anthropic  | `-p anthropic`  | claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5, ...     |
+| Gemini     | `-p gemini`     | gemini-2.0-flash, gemini-1.5-pro, gemini-1.5-flash, ...       |
+| Perplexity | `-p perplexity` | sonar-pro, sonar-reasoning-pro, sonar-reasoning, sonar         |
+| Groq       | `-p groq`       | llama-3.3-70b-versatile, mixtral-8x7b-32768, gemma2-9b-it, ...|
+| Ollama     | `-p ollama`     | Any locally pulled model (llama3.2, mistral, codellama, ...)  |
 
-List all models:
+List models:
 
 ```bash
-mayai models
-mayai models -p openai
-mayai models -p ollama      # lists locally installed Ollama models
+mayai models                # all providers
+mayai models -p openai      # specific provider
+mayai models -p ollama      # locally installed Ollama models
 ```
 
 ## In-chat Commands (REPL mode)
 
-| Command                        | Description                                   |
-|--------------------------------|-----------------------------------------------|
-| `/switch <provider> [model]`   | Switch provider (history is preserved)        |
-| `/clear`                       | Clear conversation history                    |
-| `/models`                      | List models for the current provider          |
-| `/history`                     | Show conversation history                     |
-| `/help`                        | Show command list                             |
-| `/exit`                        | Exit MAYAI                                    |
+| Command                        | Description                                        |
+|--------------------------------|----------------------------------------------------|
+| `/save [name]`                 | Save current conversation (auto-names if omitted)  |
+| `/load <name>`                 | Load and resume a saved conversation               |
+| `/sessions`                    | List all saved sessions                            |
+| `/sessions delete <name>`      | Delete a saved session                             |
+| `/switch <provider> [model]`   | Switch provider (history is preserved)             |
+| `/clear`                       | Clear conversation history                         |
+| `/models`                      | List models for the current provider               |
+| `/history`                     | Show conversation history                          |
+| `/help`                        | Show command list                                  |
+| `/exit`                        | Exit MAYAI (auto-saves conversation)               |
+
+## Session Persistence
+
+MAYAI automatically saves your conversation when you exit so you never lose context.
+
+```bash
+# Resume a session from the terminal
+mayai -s my-research
+
+# Resume a session and immediately ask a follow-up
+mayai -s my-research "Can you elaborate on the last point?"
+
+# Manage sessions
+mayai sessions                    # list all saved sessions
+mayai sessions delete my-research # delete a session
+```
+
+Sessions are stored as JSON at `~/.config/mayai/sessions/`.
 
 ## Config File
 
@@ -146,8 +171,6 @@ base_url = "http://localhost:11434"
 default_model = "llama3.2"
 ```
 
-View config commands:
-
 ```bash
 mayai config show       # print current config
 mayai config path       # print config file path
@@ -166,12 +189,13 @@ No API key needed for local models.
 ## CLI Reference
 
 ```
-mayai [query] [-p PROVIDER] [-m MODEL] [-v]
+mayai [query] [-p PROVIDER] [-m MODEL] [-s SESSION] [-v]
 mayai models [-p PROVIDER]
+mayai sessions [delete <name>]
 mayai config [show|set|path|init]
 mayai --version
 ```
 
 ## License
 
-MIT
+MIT — Copyright (c) 2026 MAYAI
