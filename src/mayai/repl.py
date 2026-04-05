@@ -4,13 +4,22 @@ import sys
 
 from .config import Config
 from .conversation import Conversation
+from .costs import (
+    count_conversation_tokens,
+    estimate_cost,
+    estimate_tokens,
+    format_cost,
+    format_tokens,
+)
 from .display import (
     print_banner,
+    print_cost_line,
     print_error,
     print_help,
     print_history,
     print_info,
     print_models_table,
+    print_patterns_table,
     print_provider_header,
     print_response_end,
     print_sessions_table,
@@ -32,20 +41,30 @@ class REPLSession:
         provider_name: str,
         config: Config,
         session_name: str = "",
+        pattern_name: str = "",
     ) -> None:
         self._provider = provider
         self._provider_name = provider_name
         self._config = config
+        self._session_name = session_name
+        self._pattern_name = pattern_name
         self._system_prompt = config.get_system_prompt()
         self._conversation = Conversation(system_prompt=self._system_prompt)
-        self._session_name = session_name  # tracks the last saved/loaded name
+
+        # Cost tracking
+        self._session_cost: float = 0.0
+        self._session_input_tokens: int = 0
+        self._session_output_tokens: int = 0
+
+        # Apply pattern if provided at startup
+        if pattern_name:
+            self._apply_pattern(pattern_name, announce=False)
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
 
     def _pop_last_user_message(self) -> None:
-        """Remove the last user message (used when a request fails)."""
         msgs = self._conversation.get_messages()
         self._conversation.clear()
         for m in msgs[:-1]:
@@ -53,6 +72,59 @@ class REPLSession:
                 self._conversation.add_user(m["content"])
             else:
                 self._conversation.add_assistant(m["content"])
+
+    def _apply_pattern(self, name: str, announce: bool = True) -> bool:
+        """Apply a pattern by name. Returns True on success."""
+        pat = self._config.get_pattern(name)
+        if pat is None:
+            print_error(
+                f"Pattern '{name}' not found. "
+                "Run /patterns to see available patterns."
+            )
+            return False
+
+        self._system_prompt = pat.get("system_prompt", self._config.get_system_prompt())
+        self._pattern_name = name
+
+        # Optionally switch provider/model if pattern specifies one
+        new_provider_name = pat.get("provider")
+        new_model = pat.get("model")
+        if new_provider_name and new_provider_name != self._provider_name:
+            api_key = self._config.resolve_api_key(new_provider_name)
+            base_url = (
+                self._config.get_ollama_base_url()
+                if new_provider_name == "ollama"
+                else None
+            )
+            if not api_key and new_provider_name != "ollama":
+                print_warning(
+                    f"Pattern '{name}' prefers provider '{new_provider_name}' "
+                    "but no API key found — keeping current provider."
+                )
+            else:
+                try:
+                    resolved_model = new_model or self._config.get_default_model(new_provider_name)
+                    from .providers import PROVIDER_REGISTRY
+                    cls = PROVIDER_REGISTRY.get(new_provider_name)
+                    resolved_model = resolved_model or (cls.default_model if cls else "default")
+                    self._provider = get_provider(
+                        name=new_provider_name,
+                        api_key=api_key,
+                        model=resolved_model,
+                        base_url=base_url,
+                    )
+                    self._provider_name = new_provider_name
+                except MayaiError as exc:
+                    print_warning(f"Could not switch provider for pattern: {exc}")
+        elif new_model and new_model != self._provider.model:
+            self._provider.model = new_model
+
+        if announce:
+            print_success(
+                f"Pattern '[bold]{name}[/bold]' applied. "
+                f"Provider: {self._provider_name} / {self._provider.model}"
+            )
+        return True
 
     # ------------------------------------------------------------------ #
     # Command handlers                                                     #
@@ -71,9 +143,7 @@ class REPLSession:
                 )
                 default = self._provider.model
             else:
-                models = type(self._provider).list_models(
-                    api_key=self._provider.api_key
-                )
+                models = type(self._provider).list_models(api_key=self._provider.api_key)
                 default = type(self._provider).default_model
             print_models_table(self._provider_name, models, default)
         except MayaiError as exc:
@@ -85,6 +155,16 @@ class REPLSession:
     def _cmd_help(self) -> None:
         print_help()
 
+    def _cmd_cost(self) -> None:
+        from rich.console import Console
+        c = Console(highlight=False)
+        c.print(
+            f"\n[bold cyan]Session cost estimate[/bold cyan]\n"
+            f"  Input tokens:  ~{format_tokens(self._session_input_tokens)}\n"
+            f"  Output tokens: ~{format_tokens(self._session_output_tokens)}\n"
+            f"  Total cost:    {format_cost(self._session_cost) if self._session_cost else 'N/A (no pricing data for this model)'}"
+        )
+
     def _cmd_switch(self, args: list[str]) -> None:
         if not args:
             print_warning("Usage: /switch <provider> [model]")
@@ -93,8 +173,8 @@ class REPLSession:
 
         new_provider_name = args[0].lower()
         new_model_arg = args[1] if len(args) > 1 else None
-
         new_model = new_model_arg or self._config.get_default_model(new_provider_name)
+
         if new_model is None:
             from .providers import PROVIDER_REGISTRY
             cls = PROVIDER_REGISTRY.get(new_provider_name)
@@ -160,7 +240,6 @@ class REPLSession:
             print_info("Run /sessions to see available sessions.")
             return
 
-        # Restore conversation
         self._conversation.clear()
         for msg in data.get("messages", []):
             if msg["role"] == "user":
@@ -189,8 +268,17 @@ class REPLSession:
             except FileNotFoundError as exc:
                 print_error(str(exc))
             return
-
         print_sessions_table(list_sessions())
+
+    def _cmd_pattern(self, args: list[str]) -> None:
+        if not args:
+            print_warning("Usage: /pattern <name>")
+            print_info("Run /patterns to see available patterns.")
+            return
+        self._apply_pattern(args[0], announce=True)
+
+    def _cmd_patterns(self) -> None:
+        print_patterns_table(self._config.list_patterns())
 
     def _cmd_exit(self, _: list[str]) -> None:
         self._auto_save_on_exit()
@@ -198,7 +286,6 @@ class REPLSession:
         sys.exit(0)
 
     def _auto_save_on_exit(self) -> None:
-        """If there's unsaved conversation history, auto-save it."""
         if self._conversation.is_empty():
             return
         name = self._session_name or auto_name(self._provider_name)
@@ -212,7 +299,7 @@ class REPLSession:
             )
             print_info(f"Session auto-saved as '[bold]{name}[/bold]'.")
         except Exception:
-            pass  # Don't block exit on save failure
+            pass
 
     def _handle_command(self, raw: str) -> None:
         parts = raw.strip().split()
@@ -226,10 +313,13 @@ class REPLSession:
             "/models":   lambda _: self._cmd_models(),
             "/history":  lambda _: self._cmd_history(),
             "/help":     lambda _: self._cmd_help(),
+            "/cost":     lambda _: self._cmd_cost(),
             "/switch":   self._cmd_switch,
             "/save":     self._cmd_save,
             "/load":     self._cmd_load,
             "/sessions": self._cmd_sessions,
+            "/pattern":  self._cmd_pattern,
+            "/patterns": lambda _: self._cmd_patterns(),
         }
 
         handler = dispatch.get(cmd)
@@ -243,7 +333,12 @@ class REPLSession:
     # ------------------------------------------------------------------ #
 
     def run(self) -> None:
-        print_banner(self._provider_name, self._provider.model, self._session_name)
+        print_banner(
+            self._provider_name,
+            self._provider.model,
+            self._session_name,
+            self._pattern_name,
+        )
 
         while True:
             try:
@@ -262,8 +357,10 @@ class REPLSession:
                 self._handle_command(user_input)
                 continue
 
-            # Send to provider
+            # Count input tokens before sending
             self._conversation.add_user(user_input)
+            input_tokens = count_conversation_tokens(self._conversation.get_messages())
+
             print_provider_header(self._provider_name, self._provider.model)
 
             full_response = ""
@@ -292,3 +389,18 @@ class REPLSession:
                 continue
 
             self._conversation.add_assistant(full_response)
+
+            # Cost tracking
+            output_tokens = estimate_tokens(full_response)
+            cost = estimate_cost(self._provider.model, input_tokens, output_tokens)
+            if cost is not None:
+                self._session_cost += cost
+            self._session_input_tokens += input_tokens
+            self._session_output_tokens += output_tokens
+
+            print_cost_line(
+                input_tokens,
+                output_tokens,
+                cost,
+                self._session_cost if self._session_cost > 0 else None,
+            )

@@ -1,22 +1,27 @@
 """MAYAI — Multi-provider AI CLI entry point."""
 
 import argparse
+import json
 import sys
 
 from . import __version__
 from .config import CONFIG_FILE, Config
 from .conversation import Conversation
+from .costs import count_conversation_tokens, estimate_cost, estimate_tokens, format_cost
 from .display import (
+    get_output_mode,
     print_error,
     print_info,
     print_models_table,
+    print_patterns_table,
     print_response_end,
     print_sessions_table,
     print_stream_chunk,
     print_success,
     print_warning,
+    set_output_mode,
 )
-from .exceptions import ApiKeyError, MayaiError
+from .exceptions import MayaiError
 from .providers import PROVIDER_NAMES, PROVIDER_REGISTRY, get_provider
 from .providers.ollama import OllamaProvider
 from .repl import REPLSession
@@ -24,7 +29,7 @@ from .sessions import delete_session, list_sessions, load_session
 
 
 # ------------------------------------------------------------------ #
-# Provider resolution helper                                           #
+# Provider resolution                                                  #
 # ------------------------------------------------------------------ #
 
 def _resolve_provider(provider_name: str, model_arg: str | None, config: Config):
@@ -40,14 +45,12 @@ def _resolve_provider(provider_name: str, model_arg: str | None, config: Config)
 
     cls = PROVIDER_REGISTRY[provider_name]
 
-    # Resolve model
     model = (
         model_arg
         or config.get_default_model(provider_name)
         or cls.default_model
     )
 
-    # Validate model for providers with a fixed list
     if provider_name != "ollama" and hasattr(cls, "MODELS") and cls.MODELS:
         if model not in cls.MODELS:
             print_error(
@@ -56,17 +59,15 @@ def _resolve_provider(provider_name: str, model_arg: str | None, config: Config)
             )
             sys.exit(1)
 
-    # Resolve API key
     api_key = config.resolve_api_key(provider_name)
     if provider_name != "ollama" and not api_key:
         print_error(
             f"No API key found for '{provider_name}'.\n"
             f"Set it with: mayai config set providers.{provider_name}.api_key YOUR_KEY\n"
-            f"Or export the environment variable for {provider_name.upper()}."
+            f"Or set the {provider_name.upper()}_API_KEY environment variable."
         )
         sys.exit(1)
 
-    # Resolve Ollama base URL
     base_url = config.get_ollama_base_url() if provider_name == "ollama" else None
 
     try:
@@ -91,7 +92,6 @@ def _cmd_config(args: argparse.Namespace, config: Config) -> None:
     action = getattr(args, "config_action", None)
 
     if action == "show":
-        import json
         print(json.dumps(config.as_dict(), indent=2))
 
     elif action == "set":
@@ -123,7 +123,6 @@ def _cmd_config(args: argparse.Namespace, config: Config) -> None:
 
 def _cmd_sessions(args: argparse.Namespace) -> None:
     action = getattr(args, "sessions_action", None)
-
     if action == "delete":
         if not args.name:
             print_error("Usage: mayai sessions delete <name>")
@@ -146,31 +145,40 @@ def _cmd_models(args: argparse.Namespace, config: Config) -> None:
         if target not in PROVIDER_REGISTRY:
             print_error(f"Unknown provider '{target}'. Available: {', '.join(PROVIDER_NAMES)}")
             sys.exit(1)
-
         cls = PROVIDER_REGISTRY[target]
         api_key = config.resolve_api_key(target)
-
         if target == "ollama":
             base_url = config.get_ollama_base_url()
             models = OllamaProvider.list_models(api_key=None, base_url=base_url)
             if not models:
-                print_warning(
-                    "No Ollama models found. Is Ollama running? (ollama serve)"
-                )
+                print_warning("No Ollama models found. Is Ollama running? (ollama serve)")
                 return
         else:
             models = cls.list_models(api_key=api_key)
-
         print_models_table(target, models, cls.default_model)
-
     else:
-        # Show all providers
         for name in PROVIDER_NAMES:
             cls = PROVIDER_REGISTRY[name]
             if name == "ollama":
                 print_models_table(name, ["(run 'mayai models -p ollama' to list local models)"], "")
             else:
-                print_models_table(name, cls.MODELS or ["(dynamic — requires API key)"], cls.default_model)
+                print_models_table(name, cls.MODELS or ["(dynamic)"], cls.default_model)
+
+
+def _cmd_patterns(args: argparse.Namespace, config: Config) -> None:
+    print_patterns_table(config.list_patterns())
+
+
+# ------------------------------------------------------------------ #
+# Stdin detection                                                      #
+# ------------------------------------------------------------------ #
+
+def _read_stdin() -> str | None:
+    """Return piped stdin content, or None if stdin is a TTY (interactive)."""
+    if not sys.stdin.isatty():
+        content = sys.stdin.read().strip()
+        return content if content else None
+    return None
 
 
 # ------------------------------------------------------------------ #
@@ -184,72 +192,89 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  mayai                            Start interactive chat (default provider)\n"
-            "  mayai 'What is 2+2?'             Single-shot query\n"
-            "  mayai -p anthropic -m claude-opus-4-6\n"
-            "  mayai models                     List all available models\n"
-            "  mayai models -p openai           List OpenAI models\n"
-            "  mayai config init                Create config file\n"
-            "  mayai config set providers.openai.api_key sk-...\n"
+            "  mayai                                   Start interactive chat\n"
+            "  mayai 'What is 2+2?'                    Single-shot query\n"
+            "  mayai -p anthropic -m claude-opus-4-6   Use specific provider/model\n"
+            "  cat code.py | mayai 'Review this'       Pipe file content as context\n"
+            "  mayai -P code-review < myfile.py        Apply a pattern with file input\n"
+            "  mayai --json 'Summarize X'              Output as JSON\n"
+            "  mayai --raw 'Explain Y' | pbcopy        Pipe plain text output\n"
+            "  mayai --estimate 'Long task'            Show cost estimate first\n"
+            "  mayai models -p openai                  List OpenAI models\n"
+            "  mayai patterns                          List prompt patterns\n"
+            "  mayai config init                       Create config file\n"
         ),
     )
     parser.add_argument("--version", action="version", version=f"mayai {__version__}")
 
     subparsers = parser.add_subparsers(dest="command")
 
-    # --- config subcommand ---
+    # --- config ---
     config_parser = subparsers.add_parser("config", help="Manage configuration")
     config_sub = config_parser.add_subparsers(dest="config_action")
     config_sub.add_parser("show", help="Print current config as JSON")
     config_sub.add_parser("path", help="Print config file path")
     config_sub.add_parser("init", help="Create default config file")
     set_parser = config_sub.add_parser("set", help="Set a config value")
-    set_parser.add_argument("key", help="Dot-separated key path (e.g. providers.openai.api_key)")
+    set_parser.add_argument("key", help="Dot-separated key (e.g. providers.openai.api_key)")
     set_parser.add_argument("value", help="Value to set")
 
-    # --- models subcommand ---
+    # --- models ---
     models_parser = subparsers.add_parser("models", help="List available models")
     models_parser.add_argument(
-        "-p", "--provider",
-        metavar="PROVIDER",
+        "-p", "--provider", metavar="PROVIDER",
         help=f"Filter by provider ({', '.join(PROVIDER_NAMES)})",
     )
 
-    # --- sessions subcommand ---
+    # --- sessions ---
     sessions_parser = subparsers.add_parser("sessions", help="Manage saved sessions")
     sessions_sub = sessions_parser.add_subparsers(dest="sessions_action")
     sessions_sub.add_parser("list", help="List saved sessions (default)")
     del_parser = sessions_sub.add_parser("delete", help="Delete a saved session")
     del_parser.add_argument("name", help="Session name to delete")
 
-    # --- root-level args (query / REPL) ---
+    # --- patterns ---
+    subparsers.add_parser("patterns", help="List prompt patterns")
+
+    # --- root-level args ---
     parser.add_argument(
-        "query",
-        nargs="?",
-        type=str,
-        help="Query to send in single-shot mode. Omit to start interactive chat.",
+        "query", nargs="?", type=str,
+        help="Query in single-shot mode. Omit to start interactive REPL.",
     )
     parser.add_argument(
-        "-p", "--provider",
-        type=str,
-        metavar="PROVIDER",
-        help=f"Provider to use ({', '.join(PROVIDER_NAMES)})",
+        "-p", "--provider", type=str, metavar="PROVIDER",
+        help=f"Provider ({', '.join(PROVIDER_NAMES)})",
     )
     parser.add_argument(
-        "-m", "--model",
-        type=str,
-        metavar="MODEL",
-        help="Model to use (overrides config default)",
+        "-m", "--model", type=str, metavar="MODEL",
+        help="Model (overrides config default)",
     )
     parser.add_argument(
-        "-s", "--session",
-        type=str,
-        metavar="NAME",
+        "-s", "--session", type=str, metavar="NAME",
         help="Load a saved session by name",
     )
     parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
+        "-P", "--pattern", type=str, metavar="PATTERN",
+        help="Apply a prompt pattern by name",
+    )
+
+    # Output mode (mutually exclusive)
+    output_group = parser.add_mutually_exclusive_group()
+    output_group.add_argument(
+        "--raw", action="store_true",
+        help="Output bare response text only (no decorators). Good for piping.",
+    )
+    output_group.add_argument(
+        "--json", action="store_true", dest="json_output",
+        help="Output response as a JSON object.",
+    )
+
+    parser.add_argument(
+        "--estimate", action="store_true",
+        help="Show token/cost estimate before sending. Prompts for confirmation.",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
         help="Enable debug logging",
     )
 
@@ -259,8 +284,14 @@ def main() -> None:
         import logging
         logging.basicConfig(
             level=logging.DEBUG,
-            format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+            format="%(asctime)s %(levelname)s %(name)s - %(message)s",
         )
+
+    # Set output mode early so all subsequent print_ calls respect it
+    if getattr(args, "json_output", False):
+        set_output_mode("json")
+    elif getattr(args, "raw", False):
+        set_output_mode("raw")
 
     config = Config.load()
 
@@ -268,22 +299,39 @@ def main() -> None:
     if args.command == "config":
         _cmd_config(args, config)
         return
-
     if args.command == "models":
         _cmd_models(args, config)
         return
-
     if args.command == "sessions":
         _cmd_sessions(args)
         return
+    if args.command == "patterns":
+        _cmd_patterns(args, config)
+        return
 
-    # ---- main chat path ----
+    # ---- resolve provider ----
     provider_name = getattr(args, "provider", None) or config.get_default_provider()
     model_arg = getattr(args, "model", None)
+    pattern_name = getattr(args, "pattern", None) or ""
+
+    # Apply pattern overrides before resolving provider
+    if pattern_name:
+        pat = config.get_pattern(pattern_name)
+        if pat is None:
+            print_error(
+                f"Pattern '{pattern_name}' not found. "
+                "Run 'mayai patterns' to see available patterns."
+            )
+            sys.exit(1)
+        # Pattern can override provider/model if not explicitly set on CLI
+        if not getattr(args, "provider", None) and pat.get("provider"):
+            provider_name = pat["provider"]
+        if not model_arg and pat.get("model"):
+            model_arg = pat["model"]
 
     provider, model = _resolve_provider(provider_name, model_arg, config)
 
-    # Load session if -s was specified
+    # ---- load session ----
     session_name = getattr(args, "session", None) or ""
     preloaded_messages: list[dict] = []
     if session_name:
@@ -298,35 +346,87 @@ def main() -> None:
             print_error(str(exc))
             sys.exit(1)
 
-    if args.query:
-        # Single-shot mode
-        system_prompt = config.get_system_prompt()
+    # ---- read stdin ----
+    stdin_content = _read_stdin()
+
+    # ---- single-shot mode ----
+    if args.query or stdin_content:
+        system_prompt = (
+            config.get_pattern(pattern_name).get("system_prompt")
+            if pattern_name and config.get_pattern(pattern_name)
+            else config.get_system_prompt()
+        )
+
         conversation = Conversation(system_prompt=system_prompt)
         for msg in preloaded_messages:
             if msg["role"] == "user":
                 conversation.add_user(msg["content"])
             elif msg["role"] == "assistant":
                 conversation.add_assistant(msg["content"])
-        conversation.add_user(args.query)
 
+        # Build the user message — combine query + stdin
+        user_message_parts = []
+        if args.query:
+            user_message_parts.append(args.query)
+        if stdin_content:
+            user_message_parts.append(stdin_content)
+        user_message = "\n\n".join(user_message_parts)
+        conversation.add_user(user_message)
+
+        # Cost estimate check
+        if args.estimate:
+            input_tokens = count_conversation_tokens(conversation.get_messages())
+            cost = estimate_cost(model, input_tokens, 500)
+            print_info(
+                f"Estimated input: ~{input_tokens} tokens"
+                + (f" | cost: ~{format_cost(cost)}" if cost else "")
+                + "\nContinue? [y/N] "
+            )
+            try:
+                if input().strip().lower() not in ("y", "yes"):
+                    print_info("Cancelled.")
+                    sys.exit(0)
+            except (EOFError, KeyboardInterrupt):
+                sys.exit(0)
+
+        full_response = ""
         try:
             for chunk in provider.stream_chat(conversation.get_messages(), system_prompt):
                 print_stream_chunk(chunk)
+                full_response += chunk
             print_response_end()
         except MayaiError as exc:
             print_response_end()
             print_error(str(exc))
             sys.exit(1)
 
+        # JSON output mode — emit structured result
+        if get_output_mode() == "json":
+            output_tokens = estimate_tokens(full_response)
+            input_tokens = count_conversation_tokens(conversation.get_messages())
+            cost = estimate_cost(model, input_tokens, output_tokens)
+            result = {
+                "response": full_response,
+                "provider": provider_name,
+                "model": model,
+                "tokens": {
+                    "estimated_input": input_tokens,
+                    "estimated_output": output_tokens,
+                },
+            }
+            if cost is not None:
+                result["estimated_cost_usd"] = round(cost, 6)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+
     else:
-        # Interactive REPL
+        # ---- interactive REPL ----
         repl = REPLSession(
             provider=provider,
             provider_name=provider_name,
             config=config,
             session_name=session_name,
+            pattern_name=pattern_name,
         )
-        # Restore preloaded messages into conversation
         for msg in preloaded_messages:
             if msg["role"] == "user":
                 repl._conversation.add_user(msg["content"])

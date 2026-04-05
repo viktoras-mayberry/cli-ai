@@ -29,6 +29,43 @@ DEFAULT_CONFIG: dict = {
         "groq": {"api_key": "", "default_model": "llama-3.3-70b-versatile"},
         "ollama": {"base_url": "http://localhost:11434", "default_model": "llama3.2"},
     },
+    "patterns": {
+        "code-review": {
+            "system_prompt": (
+                "You are a senior software engineer doing a thorough code review. "
+                "Focus on security vulnerabilities, bugs, performance issues, and code quality. "
+                "Be specific and actionable."
+            ),
+            "provider": "anthropic",
+            "model": "claude-opus-4-6",
+        },
+        "summarize": {
+            "system_prompt": (
+                "Summarize the following content concisely. "
+                "Use bullet points for key information. Be brief and direct."
+            ),
+        },
+        "search": {
+            "system_prompt": (
+                "Search for current, accurate information. "
+                "Always cite your sources and include relevant URLs."
+            ),
+            "provider": "perplexity",
+            "model": "sonar-pro",
+        },
+        "explain": {
+            "system_prompt": (
+                "Explain this clearly and simply as if teaching someone new to the topic. "
+                "Use concrete examples and analogies where helpful."
+            ),
+        },
+        "fix": {
+            "system_prompt": (
+                "You are a debugging expert. Identify the root cause of the problem, "
+                "explain why it happens, and provide a minimal, correct fix with explanation."
+            ),
+        },
+    },
 }
 
 
@@ -128,6 +165,14 @@ class Config:
                 target[part] = {}
             target = target[part]
         target[parts[-1]] = value
+
+    def list_patterns(self) -> dict[str, dict]:
+        """Return all defined patterns."""
+        return copy.deepcopy(self._data.get("patterns", {}))
+
+    def get_pattern(self, name: str) -> dict | None:
+        """Return a single pattern by name, or None if not found."""
+        return copy.deepcopy(self._data.get("patterns", {}).get(name))
 
     def as_dict(self) -> dict:
         return copy.deepcopy(self._data)

@@ -8,9 +8,12 @@ Chat with OpenAI, Anthropic (Claude), Google Gemini, Perplexity, Groq, or local 
 - **Real-time streaming**: responses print as they are generated
 - **Multi-turn chat**: full conversation history in interactive REPL mode
 - **Session persistence**: save, load, and resume conversations across restarts
-- **Single-shot queries**: pipe-friendly one-liner mode
+- **Pipe-friendly output**: `--raw` for plain text piping, `--json` for structured output
+- **File / stdin input**: pipe any file directly into your query
+- **Prompt patterns**: reusable named prompts with per-pattern provider/model routing
+- **Cost estimation**: live token count and USD cost per response with `--estimate`
 - **Config file**: store API keys and defaults in `~/.config/mayai/config.toml`
-- **In-chat commands**: switch provider mid-conversation, save/load sessions, list models
+- **In-chat commands**: switch provider, apply patterns, save/load sessions, view costs
 
 ## Requirements
 
@@ -113,11 +116,106 @@ mayai models -p ollama      # locally installed Ollama models
 | `/sessions`                    | List all saved sessions                            |
 | `/sessions delete <name>`      | Delete a saved session                             |
 | `/switch <provider> [model]`   | Switch provider (history is preserved)             |
+| `/pattern <name>`              | Apply a prompt pattern to this session             |
+| `/patterns`                    | List all defined patterns                          |
 | `/clear`                       | Clear conversation history                         |
 | `/models`                      | List models for the current provider               |
 | `/history`                     | Show conversation history                          |
+| `/cost`                        | Show session token usage and cost estimate         |
 | `/help`                        | Show command list                                  |
 | `/exit`                        | Exit MAYAI (auto-saves conversation)               |
+
+## Pipe-Friendly Output
+
+```bash
+# --raw: bare response text, no decorators — perfect for piping
+mayai --raw "List 5 Unix tips" | grep "tip"
+mayai --raw "Write a haiku" > haiku.txt
+
+# --json: structured JSON output
+mayai --json "Summarize Redis" | jq '.response'
+mayai --json -p openai "Explain REST" > result.json
+```
+
+The JSON schema:
+```json
+{
+  "response": "...",
+  "provider": "openai",
+  "model": "gpt-4o",
+  "tokens": { "estimated_input": 42, "estimated_output": 310 },
+  "estimated_cost_usd": 0.003875
+}
+```
+
+## File & Stdin Input
+
+Pipe any file content directly into your query:
+
+```bash
+# Review a file
+cat src/auth.py | mayai "Find security issues in this code"
+
+# Summarize a document
+mayai "Summarize this" < report.txt
+
+# Combine a query with file input
+mayai -P code-review < myfile.py
+
+# Chain commands
+git diff | mayai --raw "Write a commit message for these changes"
+```
+
+## Prompt Patterns
+
+Patterns are reusable named prompts defined in your config file. They can pin a specific system prompt, provider, and model — so you don't have to repeat yourself.
+
+```bash
+# Use a pattern
+mayai -P code-review < myfile.py
+mayai -P summarize < long_article.txt
+mayai -P search "latest Python 3.14 features"
+mayai -P explain "what is a merkle tree"
+mayai -P fix < error_log.txt
+
+# List all patterns
+mayai patterns
+
+# Switch pattern mid-conversation (REPL)
+/pattern code-review
+```
+
+Built-in patterns: `code-review`, `summarize`, `search`, `explain`, `fix`
+
+Define your own in `~/.config/mayai/config.toml`:
+
+```toml
+[patterns.my-pattern]
+system_prompt = "You are an expert in distributed systems. Be rigorous and technical."
+provider = "anthropic"          # optional — overrides default provider
+model = "claude-opus-4-6"       # optional — overrides default model
+```
+
+## Cost Estimation
+
+MAYAI tracks token usage and estimates cost after every response:
+
+```
+~320 tokens in | ~180 tokens out | est. $0.0062 | session total: $0.0187
+```
+
+Before sending a long or expensive query, preview the cost:
+
+```bash
+mayai --estimate "Rewrite this entire codebase" < main.py
+# Shows: Estimated input: ~2,400 tokens | cost: ~$0.0720
+# Continue? [y/N]
+```
+
+View session totals in the REPL:
+```
+/cost
+```
 
 ## Session Persistence
 
@@ -189,8 +287,10 @@ No API key needed for local models.
 ## CLI Reference
 
 ```
-mayai [query] [-p PROVIDER] [-m MODEL] [-s SESSION] [-v]
+mayai [query] [-p PROVIDER] [-m MODEL] [-s SESSION] [-P PATTERN]
+              [--raw | --json] [--estimate] [-v]
 mayai models [-p PROVIDER]
+mayai patterns
 mayai sessions [delete <name>]
 mayai config [show|set|path|init]
 mayai --version

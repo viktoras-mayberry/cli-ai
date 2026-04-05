@@ -2,56 +2,120 @@ import sys
 
 from rich.console import Console
 from rich.table import Table
-from rich.text import Text
 from rich.panel import Panel
-from rich import print as rprint
 
-# force_terminal=True ensures rich uses ANSI sequences even in Windows terminals
-# that don't advertise full VT support; highlight=False avoids spurious markup.
 console = Console(highlight=False)
 err_console = Console(stderr=True, highlight=False)
 
+# Output mode: "normal" | "raw" | "json"
+# - normal: full decorators, streaming
+# - raw:    bare response text only, streaming, no decorators
+# - json:   full response collected then printed as JSON
+_output_mode: str = "normal"
+
+
+def set_output_mode(mode: str) -> None:
+    global _output_mode
+    _output_mode = mode
+
+
+def get_output_mode() -> str:
+    return _output_mode
+
+
+def is_silent() -> bool:
+    """True when decorative output should be suppressed (raw / json modes)."""
+    return _output_mode in ("raw", "json")
+
+
+# ------------------------------------------------------------------ #
+# Streaming                                                            #
+# ------------------------------------------------------------------ #
 
 def print_stream_chunk(text: str) -> None:
-    """Print a streaming text chunk immediately, no newline."""
-    print(text, end="", flush=True)
+    """Print a streaming text chunk. Suppressed in json mode (we buffer instead)."""
+    if _output_mode != "json":
+        print(text, end="", flush=True)
 
 
 def print_response_end() -> None:
-    """Terminate the streaming line."""
-    print()
+    if _output_mode != "json":
+        print()
 
+
+# ------------------------------------------------------------------ #
+# Informational (suppressed in raw/json modes)                        #
+# ------------------------------------------------------------------ #
 
 def print_info(message: str) -> None:
-    console.print(f"[bold cyan]{message}[/bold cyan]")
+    if not is_silent():
+        console.print(f"[bold cyan]{message}[/bold cyan]")
 
 
 def print_error(message: str) -> None:
+    # Errors always go to stderr regardless of output mode
     err_console.print(f"[bold red]Error:[/bold red] {message}")
 
 
 def print_warning(message: str) -> None:
-    console.print(f"[bold yellow]Warning:[/bold yellow] {message}")
+    if not is_silent():
+        console.print(f"[bold yellow]Warning:[/bold yellow] {message}")
 
 
 def print_success(message: str) -> None:
-    console.print(f"[bold green]{message}[/bold green]")
+    if not is_silent():
+        console.print(f"[bold green]{message}[/bold green]")
 
 
 def print_provider_header(provider: str, model: str) -> None:
-    console.print(
-        f"\n[bold green]MAYAI[/bold green] "
-        f"[dim]({provider} / {model})[/dim]"
-    )
+    if not is_silent():
+        console.print(
+            f"\n[bold green]MAYAI[/bold green] "
+            f"[dim]({provider} / {model})[/dim]"
+        )
 
 
 def print_user_prompt(provider: str, model: str) -> None:
-    console.print(
-        f"\n[bold yellow]You[/bold yellow] "
-        f"[dim]({provider} / {model})[/dim]: ",
-        end="",
-    )
+    if not is_silent():
+        console.print(
+            f"\n[bold yellow]You[/bold yellow] "
+            f"[dim]({provider} / {model})[/dim]: ",
+            end="",
+        )
 
+
+# ------------------------------------------------------------------ #
+# Cost display                                                         #
+# ------------------------------------------------------------------ #
+
+def print_cost_line(
+    input_tokens: int,
+    output_tokens: int,
+    cost: float | None,
+    session_cost: float | None = None,
+) -> None:
+    """Show a subtle cost line after each response in normal mode."""
+    if is_silent():
+        return
+    parts = [
+        f"~{_fmt_tok(input_tokens)} in",
+        f"~{_fmt_tok(output_tokens)} out",
+    ]
+    if cost is not None:
+        from .costs import format_cost
+        parts.append(f"est. {format_cost(cost)}")
+        if session_cost is not None and session_cost > cost:
+            parts.append(f"session total: {format_cost(session_cost)}")
+    console.print("[dim]" + " | ".join(parts) + "[/dim]")
+
+
+def _fmt_tok(n: int) -> str:
+    return f"{n / 1000:.1f}K tokens" if n >= 1000 else f"{n} tokens"
+
+
+# ------------------------------------------------------------------ #
+# Tables & structured output                                           #
+# ------------------------------------------------------------------ #
 
 def print_models_table(provider: str, models: list[str], default_model: str = "") -> None:
     table = Table(title=f"Models: {provider}", show_header=True, header_style="bold cyan")
@@ -76,7 +140,7 @@ def print_history(messages: list[dict]) -> None:
         )
         preview = msg["content"]
         if len(preview) > 200:
-            preview = preview[:200] + "…"
+            preview = preview[:200] + "..."
         console.print(f"{role_label}: {preview}")
 
 
@@ -101,15 +165,43 @@ def print_sessions_table(sessions: list[dict]) -> None:
     console.print(table)
 
 
-def print_banner(provider: str, model: str, session_name: str = "") -> None:
-    session_line = (
-        f"\n[dim]Session: [bold]{session_name}[/bold][/dim]" if session_name else ""
-    )
+def print_patterns_table(patterns: dict) -> None:
+    if not patterns:
+        print_info(
+            "No patterns defined. Run 'mayai config init' or add "
+            r"[patterns.\<name\>] sections to your config file."
+        )
+        return
+    table = Table(title="Prompt Patterns", show_header=True, header_style="bold cyan")
+    table.add_column("Name", style="bold yellow")
+    table.add_column("Provider")
+    table.add_column("Model")
+    table.add_column("System Prompt Preview")
+    for name, pat in patterns.items():
+        preview = pat.get("system_prompt", "")[:60]
+        if len(pat.get("system_prompt", "")) > 60:
+            preview += "..."
+        table.add_row(
+            name,
+            pat.get("provider", "(default)"),
+            pat.get("model", "(default)"),
+            preview,
+        )
+    console.print(table)
+
+
+def print_banner(provider: str, model: str, session_name: str = "", pattern_name: str = "") -> None:
+    extras = ""
+    if session_name:
+        extras += f"\n[dim]Session: [bold]{session_name}[/bold][/dim]"
+    if pattern_name:
+        extras += f"\n[dim]Pattern: [bold]{pattern_name}[/bold][/dim]"
     content = (
         f"[bold white]Provider:[/bold white] [cyan]{provider}[/cyan]   "
-        f"[bold white]Model:[/bold white] [cyan]{model}[/cyan]{session_line}\n\n"
+        f"[bold white]Model:[/bold white] [cyan]{model}[/cyan]{extras}\n\n"
         "[dim]Commands: /clear  /switch <provider> [model]  /save [name]  "
-        "/load <name>  /sessions  /models  /history  /help  /exit[/dim]"
+        "/load <name>  /sessions  /pattern <name>  /patterns  "
+        "/models  /history  /cost  /help  /exit[/dim]"
     )
     console.print(
         Panel(
@@ -128,13 +220,17 @@ def print_help() -> None:
     rows = [
         ("/clear", "Clear conversation history"),
         ("/switch <provider> [model]", "Switch to a different provider (and optionally model)"),
-        ("/save [name]", "Save current conversation (auto-names if no name given)"),
+        ("/save [name]", "Save current conversation (auto-names if omitted)"),
         ("/load <name>", "Load a saved conversation"),
         ("/sessions", "List all saved sessions"),
-        ("/models", "List available models for the current provider"),
+        ("/sessions delete <name>", "Delete a saved session"),
+        ("/pattern <name>", "Apply a prompt pattern to this session"),
+        ("/patterns", "List all defined patterns"),
+        ("/models", "List models for the current provider"),
         ("/history", "Show conversation history"),
+        ("/cost", "Show session token usage and cost estimate"),
         ("/help", "Show this help message"),
-        ("/exit  or  /quit", "Exit MAYAI"),
+        ("/exit  or  /quit", "Exit MAYAI (auto-saves conversation)"),
     ]
     for cmd, desc in rows:
         table.add_row(cmd, desc)
