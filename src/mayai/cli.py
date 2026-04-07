@@ -8,14 +8,18 @@ from . import __version__
 from .config import CONFIG_FILE, Config
 from .conversation import Conversation
 from .costs import count_conversation_tokens, estimate_cost, estimate_tokens, format_cost
+from .history import delete_history, get_stats, log_exchange, search_history
 from .display import (
     get_output_mode,
     print_error,
+    print_history_detail,
+    print_history_table,
     print_info,
     print_models_table,
     print_patterns_table,
     print_response_end,
     print_sessions_table,
+    print_stats,
     print_stream_chunk,
     print_success,
     print_warning,
@@ -26,6 +30,7 @@ from .providers import PROVIDER_NAMES, PROVIDER_REGISTRY, get_provider
 from .providers.ollama import OllamaProvider
 from .repl import REPLSession
 from .sessions import delete_session, list_sessions, load_session
+from .shell import run_shell_mode
 
 
 # ------------------------------------------------------------------ #
@@ -169,6 +174,44 @@ def _cmd_patterns(args: argparse.Namespace, config: Config) -> None:
     print_patterns_table(config.list_patterns())
 
 
+def _cmd_history(args: argparse.Namespace) -> None:
+    action = getattr(args, "history_action", None)
+
+    if action == "stats":
+        print_stats(get_stats())
+        return
+
+    if action == "clear":
+        confirm = getattr(args, "yes", False)
+        if not confirm:
+            print_warning(
+                "This will delete your entire query history. "
+                "Pass --yes to confirm: mayai history clear --yes"
+            )
+            return
+        deleted = delete_history()
+        print_success(f"Deleted {deleted} history entries.")
+        return
+
+    # Default: list / search
+    query = getattr(args, "search", "") or ""
+    provider = getattr(args, "provider", "") or ""
+    limit = getattr(args, "limit", 20) or 20
+    detail_id = getattr(args, "id", None)
+
+    if detail_id is not None:
+        rows = search_history(limit=1000)
+        match = next((r for r in rows if r["id"] == detail_id), None)
+        if match:
+            print_history_detail(match)
+        else:
+            print_error(f"No history entry with id {detail_id}.")
+        return
+
+    rows = search_history(query=query, provider=provider, limit=limit)
+    print_history_table(rows)
+
+
 # ------------------------------------------------------------------ #
 # Stdin detection                                                      #
 # ------------------------------------------------------------------ #
@@ -192,17 +235,21 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  mayai                                   Start interactive chat\n"
-            "  mayai 'What is 2+2?'                    Single-shot query\n"
-            "  mayai -p anthropic -m claude-opus-4-6   Use specific provider/model\n"
-            "  cat code.py | mayai 'Review this'       Pipe file content as context\n"
-            "  mayai -P code-review < myfile.py        Apply a pattern with file input\n"
-            "  mayai --json 'Summarize X'              Output as JSON\n"
-            "  mayai --raw 'Explain Y' | pbcopy        Pipe plain text output\n"
-            "  mayai --estimate 'Long task'            Show cost estimate first\n"
-            "  mayai models -p openai                  List OpenAI models\n"
-            "  mayai patterns                          List prompt patterns\n"
-            "  mayai config init                       Create config file\n"
+            "  mayai                                        Start interactive chat\n"
+            "  mayai 'What is 2+2?'                         Single-shot query\n"
+            "  mayai -p anthropic -m claude-opus-4-6        Use specific provider/model\n"
+            "  cat code.py | mayai 'Review this'            Pipe file content as context\n"
+            "  mayai -P code-review < myfile.py             Apply a pattern with file input\n"
+            "  mayai --json 'Summarize X'                   Output as JSON\n"
+            "  mayai --raw 'Explain Y' | pbcopy             Pipe plain text output\n"
+            "  mayai --shell 'find files over 100MB'        Generate and run a shell command\n"
+            "  mayai --shell 'kill port 8080' --yes         Run without confirmation\n"
+            "  mayai history                                Show recent query history\n"
+            "  mayai history --search kubernetes            Search history\n"
+            "  mayai history stats                          Show usage statistics\n"
+            "  mayai models -p openai                       List OpenAI models\n"
+            "  mayai patterns                               List prompt patterns\n"
+            "  mayai config init                            Create config file\n"
         ),
     )
     parser.add_argument("--version", action="version", version=f"mayai {__version__}")
@@ -235,6 +282,29 @@ def main() -> None:
 
     # --- patterns ---
     subparsers.add_parser("patterns", help="List prompt patterns")
+
+    # --- history ---
+    history_parser = subparsers.add_parser("history", help="Browse and search query history")
+    history_sub = history_parser.add_subparsers(dest="history_action")
+    history_sub.add_parser("stats", help="Show usage statistics")
+    clear_parser = history_sub.add_parser("clear", help="Delete history entries")
+    clear_parser.add_argument("--yes", action="store_true", help="Confirm deletion")
+    history_parser.add_argument(
+        "--search", "-q", type=str, metavar="TERM",
+        help="Search query or response text",
+    )
+    history_parser.add_argument(
+        "--provider", "-p", type=str, metavar="PROVIDER",
+        help="Filter by provider",
+    )
+    history_parser.add_argument(
+        "--limit", "-n", type=int, default=20, metavar="N",
+        help="Number of results to show (default: 20)",
+    )
+    history_parser.add_argument(
+        "--id", type=int, metavar="ID",
+        help="Show full detail for a specific history entry",
+    )
 
     # --- root-level args ---
     parser.add_argument(
@@ -269,6 +339,14 @@ def main() -> None:
         help="Output response as a JSON object.",
     )
 
+    parser.add_argument(
+        "--shell", action="store_true",
+        help="Generate a shell command from natural language, then confirm and run it.",
+    )
+    parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation prompts (use with --shell).",
+    )
     parser.add_argument(
         "--estimate", action="store_true",
         help="Show token/cost estimate before sending. Prompts for confirmation.",
@@ -308,6 +386,9 @@ def main() -> None:
     if args.command == "patterns":
         _cmd_patterns(args, config)
         return
+    if args.command == "history":
+        _cmd_history(args)
+        return
 
     # ---- resolve provider ----
     provider_name = getattr(args, "provider", None) or config.get_default_provider()
@@ -345,6 +426,24 @@ def main() -> None:
         except FileNotFoundError as exc:
             print_error(str(exc))
             sys.exit(1)
+
+    # ---- shell command mode ----
+    if getattr(args, "shell", False):
+        description = args.query or ""
+        if not description:
+            stdin_text = _read_stdin()
+            description = stdin_text or ""
+        if not description:
+            print_error("Provide a description: mayai --shell 'find large files'")
+            sys.exit(1)
+        run_shell_mode(
+            description=description,
+            provider=provider,
+            provider_name=provider_name,
+            model=model,
+            auto_confirm=getattr(args, "yes", False),
+        )
+        return
 
     # ---- read stdin ----
     stdin_content = _read_stdin()
@@ -399,6 +498,23 @@ def main() -> None:
             print_response_end()
             print_error(str(exc))
             sys.exit(1)
+
+        # Log to SQLite history
+        out_tokens = estimate_tokens(full_response)
+        in_tokens = count_conversation_tokens(conversation.get_messages())
+        cost = estimate_cost(model, in_tokens, out_tokens)
+        log_exchange(
+            provider=provider_name,
+            model=model,
+            user_message=user_message,
+            response=full_response,
+            system_prompt=system_prompt,
+            pattern=pattern_name,
+            session_name=session_name,
+            input_tokens=in_tokens,
+            output_tokens=out_tokens,
+            cost_usd=cost,
+        )
 
         # JSON output mode — emit structured result
         if get_output_mode() == "json":

@@ -201,6 +201,7 @@ def print_banner(provider: str, model: str, session_name: str = "", pattern_name
         f"[bold white]Model:[/bold white] [cyan]{model}[/cyan]{extras}\n\n"
         "[dim]Commands: /clear  /switch <provider> [model]  /save [name]  "
         "/load <name>  /sessions  /pattern <name>  /patterns  "
+        "/branch <name>  /checkout <name>  /branches  "
         "/models  /history  /cost  /help  /exit[/dim]"
     )
     console.print(
@@ -211,6 +212,102 @@ def print_banner(provider: str, model: str, session_name: str = "", pattern_name
             padding=(1, 2),
         )
     )
+
+
+def print_branches_table(branches: list[dict]) -> None:
+    if not branches:
+        print_info("No branches yet. Use /branch <name> to create one.")
+        return
+    table = Table(title="Conversation Branches", show_header=True, header_style="bold cyan")
+    table.add_column("Branch", style="bold white")
+    table.add_column("Messages", justify="right")
+    table.add_column("Active", justify="center")
+    for b in branches:
+        active_marker = "[bold green]*[/bold green]" if b["active"] else ""
+        table.add_row(b["name"], str(b["messages"]), active_marker)
+    console.print(table)
+
+
+def print_history_table(rows: list[dict]) -> None:
+    from .costs import format_cost, format_tokens
+    if not rows:
+        print_info("No history found. Start chatting to build up your log.")
+        return
+    table = Table(title="Query History", show_header=True, header_style="bold cyan")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("When", no_wrap=True)
+    table.add_column("Provider")
+    table.add_column("Model")
+    table.add_column("Query", max_width=48)
+    table.add_column("Cost", justify="right")
+    for row in rows:
+        query_preview = (row["user_message"] or "")[:80]
+        if len(row["user_message"] or "") > 80:
+            query_preview += "..."
+        cost_str = (
+            format_cost(row["cost_usd"])
+            if row.get("cost_usd") is not None
+            else "-"
+        )
+        table.add_row(
+            str(row["id"]),
+            (row["ts"] or "")[:16].replace("T", " "),
+            row["provider"],
+            row["model"],
+            query_preview,
+            cost_str,
+        )
+    console.print(table)
+
+
+def print_history_detail(row: dict) -> None:
+    """Print a single history entry in full."""
+    from .costs import format_cost, format_tokens
+    console.print(f"\n[bold cyan]#{row['id']}[/bold cyan]  {row['ts']}")
+    console.print(f"[dim]Provider:[/dim] {row['provider']} / {row['model']}")
+    if row.get("pattern"):
+        console.print(f"[dim]Pattern:[/dim] {row['pattern']}")
+    if row.get("session_name"):
+        console.print(f"[dim]Session:[/dim] {row['session_name']}")
+    console.print(f"\n[bold yellow]You:[/bold yellow]\n{row['user_message']}")
+    console.print(f"\n[bold green]MAYAI:[/bold green]\n{row['response']}")
+    in_tok = row.get("input_tokens") or 0
+    out_tok = row.get("output_tokens") or 0
+    cost = row.get("cost_usd")
+    console.print(
+        f"\n[dim]Tokens: {format_tokens(in_tok)} in / {format_tokens(out_tok)} out"
+        + (f"  |  Cost: {format_cost(cost)}" if cost is not None else "")
+        + "[/dim]"
+    )
+
+
+def print_stats(stats: dict) -> None:
+    from .costs import format_cost, format_tokens
+    if not stats or not stats.get("total_queries"):
+        print_info("No history yet. Start chatting to see stats.")
+        return
+
+    table = Table(title="MAYAI Usage Stats", show_header=False, box=None)
+    table.add_column("Metric", style="bold cyan")
+    table.add_column("Value", style="white")
+
+    table.add_row("Total queries",    str(stats["total_queries"]))
+    table.add_row("Total cost",       format_cost(stats["total_cost_usd"]))
+    table.add_row("Input tokens",     format_tokens(stats["total_input_tokens"]))
+    table.add_row("Output tokens",    format_tokens(stats["total_output_tokens"]))
+    table.add_row("First query",      (stats.get("first_query") or "-")[:16].replace("T", " "))
+    table.add_row("Last query",       (stats.get("last_query") or "-")[:16].replace("T", " "))
+    console.print(table)
+
+    if stats.get("by_provider"):
+        console.print("\n[bold cyan]By provider:[/bold cyan]")
+        for p in stats["by_provider"]:
+            console.print(f"  {p['provider']}: {p['cnt']} queries")
+
+    if stats.get("top_models"):
+        console.print("\n[bold cyan]Top models:[/bold cyan]")
+        for m in stats["top_models"]:
+            console.print(f"  {m['model']}: {m['cnt']} queries")
 
 
 def print_help() -> None:
@@ -224,6 +321,9 @@ def print_help() -> None:
         ("/load <name>", "Load a saved conversation"),
         ("/sessions", "List all saved sessions"),
         ("/sessions delete <name>", "Delete a saved session"),
+        ("/branch <name>", "Fork current conversation into a new branch"),
+        ("/checkout <name>", "Switch to a different branch"),
+        ("/branches", "List all branches in this session"),
         ("/pattern <name>", "Apply a prompt pattern to this session"),
         ("/patterns", "List all defined patterns"),
         ("/models", "List models for the current provider"),

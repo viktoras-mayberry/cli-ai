@@ -8,12 +8,14 @@ Chat with OpenAI, Anthropic (Claude), Google Gemini, Perplexity, Groq, or local 
 - **Real-time streaming**: responses print as they are generated
 - **Multi-turn chat**: full conversation history in interactive REPL mode
 - **Session persistence**: save, load, and resume conversations across restarts
+- **Conversation branching**: fork any conversation to explore alternative paths
+- **SQLite history log**: every query logged locally — searchable, filterable, with stats
+- **Shell command mode**: describe what you want in English, get a shell command to confirm and run
 - **Pipe-friendly output**: `--raw` for plain text piping, `--json` for structured output
 - **File / stdin input**: pipe any file directly into your query
 - **Prompt patterns**: reusable named prompts with per-pattern provider/model routing
-- **Cost estimation**: live token count and USD cost per response with `--estimate`
+- **Cost estimation**: live token count and USD cost per response
 - **Config file**: store API keys and defaults in `~/.config/mayai/config.toml`
-- **In-chat commands**: switch provider, apply patterns, save/load sessions, view costs
 
 ## Requirements
 
@@ -121,6 +123,9 @@ mayai models -p ollama      # locally installed Ollama models
 | `/clear`                       | Clear conversation history                         |
 | `/models`                      | List models for the current provider               |
 | `/history`                     | Show conversation history                          |
+| `/branch <name>`               | Fork current conversation into a new branch        |
+| `/checkout <name>`             | Switch to a different branch                       |
+| `/branches`                    | List all branches                                  |
 | `/cost`                        | Show session token usage and cost estimate         |
 | `/help`                        | Show command list                                  |
 | `/exit`                        | Exit MAYAI (auto-saves conversation)               |
@@ -217,6 +222,51 @@ View session totals in the REPL:
 /cost
 ```
 
+## Shell Command Mode
+
+Describe what you want in plain English — MAYAI generates the right shell command and asks for confirmation before running it:
+
+```bash
+mayai --shell "find all files larger than 100MB"
+# Generated Command: find . -type f -size +100M
+# Run this command? [y/N]
+
+mayai --shell "list all running docker containers"
+mayai --shell "show disk usage by folder" --yes   # skip confirmation
+mayai --shell "compress this folder into a zip" --yes -p groq
+```
+
+Works on Windows, macOS, and Linux — MAYAI detects your OS and shell automatically.
+
+## History Log
+
+Every query is automatically saved to a local SQLite database (`~/.config/mayai/history.db`). Nothing is sent anywhere — it's entirely local.
+
+```bash
+mayai history                          # recent queries
+mayai history --search "kubernetes"    # search queries and responses
+mayai history --provider anthropic     # filter by provider
+mayai history --limit 50               # show more results
+mayai history --id 42                  # full detail for entry #42
+mayai history stats                    # usage stats and total spend
+mayai history clear --yes              # delete all history
+```
+
+## Conversation Branching
+
+Fork any conversation at any point to explore a different direction without losing your original thread:
+
+```bash
+# In the REPL:
+/branch approach-a        # fork current conversation into 'approach-a'
+# ... explore a different angle ...
+/checkout main            # switch back to original thread
+/branch approach-b        # try yet another direction
+/branches                 # see all branches and message counts
+```
+
+Branches are preserved within a session and saved when you `/save`.
+
 ## Session Persistence
 
 MAYAI automatically saves your conversation when you exit so you never lose context.
@@ -288,10 +338,13 @@ No API key needed for local models.
 
 ```
 mayai [query] [-p PROVIDER] [-m MODEL] [-s SESSION] [-P PATTERN]
-              [--raw | --json] [--estimate] [-v]
+              [--raw | --json] [--shell] [--yes] [--estimate] [-v]
 mayai models [-p PROVIDER]
 mayai patterns
 mayai sessions [delete <name>]
+mayai history [--search TERM] [--provider P] [--limit N] [--id ID]
+mayai history stats
+mayai history clear --yes
 mayai config [show|set|path|init]
 mayai --version
 ```

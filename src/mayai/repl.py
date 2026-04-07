@@ -13,6 +13,7 @@ from .costs import (
 )
 from .display import (
     print_banner,
+    print_branches_table,
     print_cost_line,
     print_error,
     print_help,
@@ -29,6 +30,7 @@ from .display import (
     print_warning,
 )
 from .exceptions import MayaiError
+from .history import log_exchange
 from .providers import PROVIDER_NAMES, BaseProvider, get_provider
 from .providers.ollama import OllamaProvider
 from .sessions import auto_name, delete_session, list_sessions, load_session, save_session
@@ -280,6 +282,38 @@ class REPLSession:
     def _cmd_patterns(self) -> None:
         print_patterns_table(self._config.list_patterns())
 
+    def _cmd_branch(self, args: list[str]) -> None:
+        if not args:
+            print_warning("Usage: /branch <name>")
+            return
+        name = args[0]
+        if self._conversation.branch(name):
+            print_success(
+                f"Branched to '[bold]{name}[/bold]' "
+                f"({len(self._conversation)} messages copied from previous branch)."
+            )
+        else:
+            print_error(f"Branch '{name}' already exists. Use /checkout {name} to switch to it.")
+
+    def _cmd_checkout(self, args: list[str]) -> None:
+        if not args:
+            print_warning("Usage: /checkout <branch-name>")
+            return
+        name = args[0]
+        if self._conversation.checkout(name):
+            print_success(
+                f"Switched to branch '[bold]{name}[/bold]' "
+                f"({len(self._conversation)} messages)."
+            )
+        else:
+            print_error(
+                f"Branch '{name}' not found. "
+                "Use /branches to see available branches, or /branch <name> to create one."
+            )
+
+    def _cmd_branches(self) -> None:
+        print_branches_table(self._conversation.branch_info())
+
     def _cmd_exit(self, _: list[str]) -> None:
         self._auto_save_on_exit()
         print("\nExiting MAYAI. Goodbye!")
@@ -320,6 +354,9 @@ class REPLSession:
             "/sessions": self._cmd_sessions,
             "/pattern":  self._cmd_pattern,
             "/patterns": lambda _: self._cmd_patterns(),
+            "/branch":   self._cmd_branch,
+            "/checkout": self._cmd_checkout,
+            "/branches": lambda _: self._cmd_branches(),
         }
 
         handler = dispatch.get(cmd)
@@ -403,4 +440,18 @@ class REPLSession:
                 output_tokens,
                 cost,
                 self._session_cost if self._session_cost > 0 else None,
+            )
+
+            # Log to SQLite history (best-effort, never blocks)
+            log_exchange(
+                provider=self._provider_name,
+                model=self._provider.model,
+                user_message=user_input,
+                response=full_response,
+                system_prompt=self._system_prompt,
+                pattern=self._pattern_name,
+                session_name=self._session_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=cost,
             )
