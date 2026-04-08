@@ -2,9 +2,11 @@ import copy
 import os
 import tomllib
 from pathlib import Path
+from typing import Any
 
 CONFIG_DIR = Path.home() / ".config" / "mayai"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
+PROJECT_CONFIG_FILENAME = ".mayai.toml"
 
 # Canonical environment variable names for each provider
 _ENV_VARS: dict[str, str | None] = {
@@ -69,18 +71,62 @@ DEFAULT_CONFIG: dict = {
 }
 
 
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge override into base (mutates and returns base)."""
+    for k, v in override.items():
+        if (
+            k in base
+            and isinstance(base[k], dict)
+            and isinstance(v, dict)
+        ):
+            _deep_merge(base[k], v)  # type: ignore[arg-type]
+        else:
+            base[k] = v
+    return base
+
+
+def _find_project_config(start_dir: Path) -> Path | None:
+    """Find the nearest .mayai.toml by walking upward from start_dir.
+
+    Stops at filesystem root.
+    """
+    current = start_dir.resolve()
+    while True:
+        candidate = current / PROJECT_CONFIG_FILENAME
+        if candidate.exists():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+
+
 class Config:
     def __init__(self, data: dict) -> None:
         self._data = data
 
     @classmethod
     def load(cls) -> "Config":
-        """Load config from disk, falling back to defaults if file doesn't exist."""
-        if not CONFIG_FILE.exists():
-            return cls(copy.deepcopy(DEFAULT_CONFIG))
-        with open(CONFIG_FILE, "rb") as f:
-            data = tomllib.load(f)
-        return cls(data)
+        """Load config with layering:
+
+        DEFAULT_CONFIG < project .mayai.toml < user ~/.config/mayai/config.toml
+        """
+        data: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
+
+        project_file = _find_project_config(Path.cwd())
+        if project_file and project_file.exists():
+            with open(project_file, "rb") as f:
+                project_data = tomllib.load(f)
+            if isinstance(project_data, dict):
+                _deep_merge(data, project_data)
+
+        if CONFIG_FILE.exists():
+            with open(CONFIG_FILE, "rb") as f:
+                user_data = tomllib.load(f)
+            if isinstance(user_data, dict):
+                _deep_merge(data, user_data)
+
+        return cls(data)  # type: ignore[arg-type]
 
     def save(self) -> None:
         """Write current config to disk as TOML."""

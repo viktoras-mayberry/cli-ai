@@ -31,9 +31,10 @@ from .display import (
 )
 from .exceptions import MayaiError
 from .history import log_exchange
-from .providers import PROVIDER_NAMES, BaseProvider, get_provider
+from .providers import BaseProvider, get_provider, get_provider_names
 from .providers.ollama import OllamaProvider
 from .sessions import auto_name, delete_session, list_sessions, load_session, save_session
+from .tools import get_repl_commands, get_tool, get_tools
 
 
 class REPLSession:
@@ -170,7 +171,7 @@ class REPLSession:
     def _cmd_switch(self, args: list[str]) -> None:
         if not args:
             print_warning("Usage: /switch <provider> [model]")
-            print_info(f"Available providers: {', '.join(PROVIDER_NAMES)}")
+            print_info(f"Available providers: {', '.join(get_provider_names())}")
             return
 
         new_provider_name = args[0].lower()
@@ -211,6 +212,30 @@ class REPLSession:
             f"Switched to [bold]{new_provider_name}[/bold] / {new_model}. "
             "History preserved."
         )
+
+    def _cmd_tool(self, args: list[str]) -> None:
+        if not args:
+            print_warning("Usage: /tool <name> [args...]")
+            tools = get_tools()
+            if tools:
+                print_info(f"Available tools: {', '.join(sorted(tools.keys()))}")
+            return
+
+        name = args[0].lower()
+        reg = get_tool(name)
+        if not reg:
+            print_error(f"Unknown tool '{name}'.")
+            tools = get_tools()
+            if tools:
+                print_info(f"Available tools: {', '.join(sorted(tools.keys()))}")
+            return
+
+        try:
+            reg.tool.run_repl(args[1:], self)
+        except MayaiError as exc:
+            print_error(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            print_error(f"Tool '{name}' failed: {exc}")
 
     def _cmd_save(self, args: list[str]) -> None:
         if self._conversation.is_empty():
@@ -340,6 +365,17 @@ class REPLSession:
         cmd = parts[0].lower()
         args = parts[1:]
 
+        # Tool plugins can optionally register dedicated slash commands.
+        tool_cmds = get_repl_commands()
+        if cmd in tool_cmds:
+            try:
+                tool_cmds[cmd].tool.run_repl(args, self)
+            except MayaiError as exc:
+                print_error(str(exc))
+            except Exception as exc:  # noqa: BLE001
+                print_error(f"Tool '{tool_cmds[cmd].name}' failed: {exc}")
+            return
+
         dispatch = {
             "/exit":     self._cmd_exit,
             "/quit":     self._cmd_exit,
@@ -349,6 +385,7 @@ class REPLSession:
             "/help":     lambda _: self._cmd_help(),
             "/cost":     lambda _: self._cmd_cost(),
             "/switch":   self._cmd_switch,
+            "/tool":     self._cmd_tool,
             "/save":     self._cmd_save,
             "/load":     self._cmd_load,
             "/sessions": self._cmd_sessions,

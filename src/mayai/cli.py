@@ -26,11 +26,13 @@ from .display import (
     set_output_mode,
 )
 from .exceptions import MayaiError
-from .providers import PROVIDER_NAMES, PROVIDER_REGISTRY, get_provider
+from .providers import PROVIDER_REGISTRY, get_provider, get_provider_names
 from .providers.ollama import OllamaProvider
+from .plugins import get_last_loaded_plugins, load_plugins
 from .repl import REPLSession
 from .sessions import delete_session, list_sessions, load_session
 from .shell import run_shell_mode
+from .tools import get_tool, get_tools
 
 
 # ------------------------------------------------------------------ #
@@ -44,7 +46,7 @@ def _resolve_provider(provider_name: str, model_arg: str | None, config: Config)
     if provider_name not in PROVIDER_REGISTRY:
         print_error(
             f"Unknown provider '{provider_name}'.\n"
-            f"Available: {', '.join(PROVIDER_NAMES)}"
+            f"Available: {', '.join(get_provider_names())}"
         )
         sys.exit(1)
 
@@ -148,7 +150,9 @@ def _cmd_models(args: argparse.Namespace, config: Config) -> None:
     if target:
         target = target.lower()
         if target not in PROVIDER_REGISTRY:
-            print_error(f"Unknown provider '{target}'. Available: {', '.join(PROVIDER_NAMES)}")
+            print_error(
+                f"Unknown provider '{target}'. Available: {', '.join(get_provider_names())}"
+            )
             sys.exit(1)
         cls = PROVIDER_REGISTRY[target]
         api_key = config.resolve_api_key(target)
@@ -162,7 +166,7 @@ def _cmd_models(args: argparse.Namespace, config: Config) -> None:
             models = cls.list_models(api_key=api_key)
         print_models_table(target, models, cls.default_model)
     else:
-        for name in PROVIDER_NAMES:
+        for name in get_provider_names():
             cls = PROVIDER_REGISTRY[name]
             if name == "ollama":
                 print_models_table(name, ["(run 'mayai models -p ollama' to list local models)"], "")
@@ -172,6 +176,59 @@ def _cmd_models(args: argparse.Namespace, config: Config) -> None:
 
 def _cmd_patterns(args: argparse.Namespace, config: Config) -> None:
     print_patterns_table(config.list_patterns())
+
+
+def _cmd_plugins() -> None:
+    loaded = get_last_loaded_plugins()
+    if not loaded:
+        print_warning("Plugins have not been loaded yet.")
+        return
+
+    if loaded.providers:
+        print_info(f"Providers: {', '.join(sorted(loaded.providers.keys()))}")
+    else:
+        print_info("Providers: (none)")
+
+    tools = get_tools()
+    if tools:
+        print_info(f"Tools: {', '.join(sorted(tools.keys()))}")
+    else:
+        print_info("Tools: (none)")
+
+    if loaded.errors:
+        print_warning("Some plugins failed to load:")
+        for msg in loaded.errors:
+            print_warning(f"- {msg}")
+
+
+def _cmd_tool(args: argparse.Namespace, config: Config) -> None:
+    tool_name = getattr(args, "tool_name", "") or ""
+    if not tool_name:
+        print_warning("Usage: mayai tool <name> [args...]")
+        tools = get_tools()
+        if tools:
+            print_info(f"Available tools: {', '.join(sorted(tools.keys()))}")
+        return
+
+    reg = get_tool(tool_name)
+    if not reg:
+        print_error(f"Unknown tool '{tool_name}'.")
+        tools = get_tools()
+        if tools:
+            print_info(f"Available tools: {', '.join(sorted(tools.keys()))}")
+        sys.exit(1)
+
+    try:
+        code = reg.tool.run(args, config)
+    except MayaiError as exc:
+        print_error(str(exc))
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001
+        print_error(f"Tool '{tool_name}' failed: {exc}")
+        sys.exit(1)
+
+    if isinstance(code, int) and code != 0:
+        sys.exit(code)
 
 
 def _cmd_history(args: argparse.Namespace) -> None:
@@ -229,6 +286,9 @@ def _read_stdin() -> str | None:
 # ------------------------------------------------------------------ #
 
 def main() -> None:
+    # Load entry-point plugins early so providers/tools appear everywhere.
+    load_plugins()
+
     parser = argparse.ArgumentParser(
         prog="mayai",
         description="MAYAI — Chat with any AI model from your terminal.",
@@ -256,6 +316,20 @@ def main() -> None:
 
     subparsers = parser.add_subparsers(dest="command")
 
+    # --- plugins ---
+    subparsers.add_parser("plugins", help="List discovered plugins (providers/tools)")
+
+    # --- tool ---
+    tool_parser = subparsers.add_parser("tool", help="Run a tool plugin")
+    tool_sub = tool_parser.add_subparsers(dest="tool_name")
+    for name, reg in sorted(get_tools().items()):
+        p = tool_sub.add_parser(name, help=getattr(reg.tool, "help", "") or None)
+        try:
+            reg.tool.add_arguments(p)
+        except Exception:
+            # Tool errors should not break the CLI parser.
+            pass
+
     # --- config ---
     config_parser = subparsers.add_parser("config", help="Manage configuration")
     config_sub = config_parser.add_subparsers(dest="config_action")
@@ -270,7 +344,7 @@ def main() -> None:
     models_parser = subparsers.add_parser("models", help="List available models")
     models_parser.add_argument(
         "-p", "--provider", metavar="PROVIDER",
-        help=f"Filter by provider ({', '.join(PROVIDER_NAMES)})",
+        help=f"Filter by provider ({', '.join(get_provider_names())})",
     )
 
     # --- sessions ---
@@ -313,7 +387,7 @@ def main() -> None:
     )
     parser.add_argument(
         "-p", "--provider", type=str, metavar="PROVIDER",
-        help=f"Provider ({', '.join(PROVIDER_NAMES)})",
+        help=f"Provider ({', '.join(get_provider_names())})",
     )
     parser.add_argument(
         "-m", "--model", type=str, metavar="MODEL",
@@ -374,6 +448,12 @@ def main() -> None:
     config = Config.load()
 
     # ---- dispatch subcommands ----
+    if args.command == "plugins":
+        _cmd_plugins()
+        return
+    if args.command == "tool":
+        _cmd_tool(args, config)
+        return
     if args.command == "config":
         _cmd_config(args, config)
         return

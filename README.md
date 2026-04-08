@@ -5,6 +5,7 @@ Chat with OpenAI, Anthropic (Claude), Google Gemini, Perplexity, Groq, or local 
 ## Features
 
 - **Multi-provider**: OpenAI, Anthropic, Gemini, Perplexity, Groq, Ollama (local)
+- **Plugin ecosystem**: install third-party providers/tools and MAYAI discovers them automatically
 - **Real-time streaming**: responses print as they are generated
 - **Multi-turn chat**: full conversation history in interactive REPL mode
 - **Session persistence**: save, load, and resume conversations across restarts
@@ -15,7 +16,8 @@ Chat with OpenAI, Anthropic (Claude), Google Gemini, Perplexity, Groq, or local 
 - **File / stdin input**: pipe any file directly into your query
 - **Prompt patterns**: reusable named prompts with per-pattern provider/model routing
 - **Cost estimation**: live token count and USD cost per response
-- **Config file**: store API keys and defaults in `~/.config/mayai/config.toml`
+- **Team config**: commit `.mayai.toml` to share defaults/patterns with your team
+- **Config file**: store API keys and personal overrides in `~/.config/mayai/config.toml`
 
 ## Requirements
 
@@ -118,6 +120,7 @@ mayai models -p ollama      # locally installed Ollama models
 | `/sessions`                    | List all saved sessions                            |
 | `/sessions delete <name>`      | Delete a saved session                             |
 | `/switch <provider> [model]`   | Switch provider (history is preserved)             |
+| `/tool <name> [args...]`       | Run an installed tool plugin                       |
 | `/pattern <name>`              | Apply a prompt pattern to this session             |
 | `/patterns`                    | List all defined patterns                          |
 | `/clear`                       | Clear conversation history                         |
@@ -324,6 +327,106 @@ mayai config show       # print current config
 mayai config path       # print config file path
 mayai config init       # (re)create default config
 ```
+
+## Team Config (`.mayai.toml`)
+
+In addition to your personal config, MAYAI will look for a project-level `.mayai.toml` by walking upward from your current working directory and using the nearest file it finds.
+
+Precedence (later wins on conflicts):
+
+- Built-in defaults
+- `.mayai.toml` (project/team)
+- `~/.config/mayai/config.toml` (personal overrides)
+
+Example `.mayai.toml` you can commit to a repo:
+
+```toml
+[defaults]
+provider = "anthropic"
+system_prompt = "You are an expert in our codebase. Always prefer TypeScript."
+
+[patterns.our-review]
+system_prompt = "Follow our team's code style guide at ..."
+```
+
+## Plugins
+
+MAYAI discovers plugins via Python entry points. After installing a plugin package it shows up automatically — no config changes needed.
+
+```bash
+pip install mayai-provider-cohere    # adds Cohere as a provider
+pip install mayai-provider-xai       # adds xAI / Grok
+pip install mayai-tool-jira          # adds a /jira slash command
+```
+
+```bash
+mayai plugins                        # inspect what is loaded
+mayai tool <name> --help             # run a tool plugin from the CLI
+```
+
+In the REPL, tools are available via:
+```
+/tool <name> [args...]
+```
+Or via a dedicated slash command if the tool registers one (e.g. `/jira`).
+
+### Writing a provider plugin
+
+Create a package that exposes a `BaseProvider` subclass via the `mayai.providers` entry point group:
+
+```toml
+# your plugin's pyproject.toml
+[project.entry-points."mayai.providers"]
+cohere = "mayai_provider_cohere:CohereProvider"
+```
+
+```python
+# mayai_provider_cohere.py
+from mayai.providers.openai_compat import OpenAICompatibleProvider
+
+class CohereProvider(OpenAICompatibleProvider):
+    name = "cohere"
+    BASE_URL = "https://api.cohere.ai/compatibility/v1"
+    default_model = "command-r-plus"
+    MODELS = ["command-r-plus", "command-r", "command-light"]
+```
+
+Once installed, `mayai -p cohere "hello"` works immediately.
+
+### Writing a tool plugin
+
+Create a package that exposes a `Tool` subclass via the `mayai.tools` entry point group:
+
+```toml
+# your plugin's pyproject.toml
+[project.entry-points."mayai.tools"]
+jira = "mayai_tool_jira:JiraTool"
+```
+
+```python
+# mayai_tool_jira.py
+from mayai.tools.base import Tool
+
+class JiraTool(Tool):
+    name = "jira"
+    help = "Search and create Jira tickets"
+    repl_command = "/jira"   # optional: registers a dedicated REPL slash command
+
+    def add_arguments(self, parser):
+        parser.add_argument("query", help="Search term or ticket ID")
+
+    def run(self, args, config):
+        # CLI: mayai tool jira PROJ-123
+        print(f"Fetching {args.query} ...")
+        return 0
+
+    def run_repl(self, raw_args, session):
+        # REPL: /jira PROJ-123
+        query = raw_args[0] if raw_args else ""
+        print(f"Fetching {query} ...")
+```
+
+Both provider and tool plugins are loaded at startup, isolated from each other — a broken plugin is warned about but never crashes MAYAI.
 
 ## Local Models (Ollama)
 
