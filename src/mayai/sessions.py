@@ -15,7 +15,11 @@ def _sessions_dir() -> Path:
 
 
 def _session_path(name: str) -> Path:
-    return _sessions_dir() / f"{name}.json"
+    base = _sessions_dir().resolve()
+    path = (base / f"{name}.json").resolve()
+    if not path.is_relative_to(base):
+        raise ValueError(f"Invalid session name: '{name}'. Directory traversal is not allowed.")
+    return path
 
 
 def save_session(

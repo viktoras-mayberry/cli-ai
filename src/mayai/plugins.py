@@ -27,7 +27,7 @@ def _iter_entry_points(group: str):
     return list(eps.get(group, []))  # type: ignore[no-any-return]
 
 
-def load_plugins() -> LoadedPlugins:
+def load_plugins(config: Any = None) -> LoadedPlugins:
     """Discover and load MAYAI plugins via Python entry points.
 
     This is intentionally best-effort: plugin failures are collected as warnings
@@ -40,7 +40,12 @@ def load_plugins() -> LoadedPlugins:
     errors: list[str] = []
 
     # --- Providers ---
+    enabled_plugins = config.as_dict().get("plugins", {}).get("enabled", []) if config else []
+
     for ep in _iter_entry_points("mayai.providers"):
+        if ep.name not in enabled_plugins:
+            errors.append(f"Provider plugin '{ep.name}' installed but not enabled in config [plugins.enabled]")
+            continue
         try:
             obj = ep.load()
             if not isinstance(obj, type) or not issubclass(obj, BaseProvider):
@@ -59,6 +64,9 @@ def load_plugins() -> LoadedPlugins:
 
     # --- Tools ---
     for ep in _iter_entry_points("mayai.tools"):
+        if ep.name not in enabled_plugins:
+            errors.append(f"Tool plugin '{ep.name}' installed but not enabled in config [plugins.enabled]")
+            continue
         try:
             obj = ep.load()
             if not register_tool(ep.name, obj, allow_override=False, source="plugin"):

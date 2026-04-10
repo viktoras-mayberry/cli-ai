@@ -23,6 +23,9 @@ DEFAULT_CONFIG: dict = {
         "provider": "openai",
         "system_prompt": "Be precise and concise.",
     },
+    "plugins": {
+        "enabled": [],
+    },
     "providers": {
         "openai": {"api_key": "", "default_model": "gpt-4o"},
         "anthropic": {"api_key": "", "default_model": "claude-opus-4-6"},
@@ -118,6 +121,11 @@ class Config:
             with open(project_file, "rb") as f:
                 project_data = tomllib.load(f)
             if isinstance(project_data, dict):
+                if "providers" in project_data and isinstance(project_data["providers"], dict):
+                    for provider_data in project_data["providers"].values():
+                        if isinstance(provider_data, dict):
+                            provider_data.pop("api_key", None)
+                            provider_data.pop("base_url", None)
                 _deep_merge(data, project_data)
 
         if CONFIG_FILE.exists():

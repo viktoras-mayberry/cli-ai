@@ -286,8 +286,9 @@ def _read_stdin() -> str | None:
 # ------------------------------------------------------------------ #
 
 def main() -> None:
+    config = Config.load()
     # Load entry-point plugins early so providers/tools appear everywhere.
-    load_plugins()
+    load_plugins(config)
 
     parser = argparse.ArgumentParser(
         prog="mayai",
@@ -444,8 +445,7 @@ def main() -> None:
         set_output_mode("json")
     elif getattr(args, "raw", False):
         set_output_mode("raw")
-
-    config = Config.load()
+    # Config is now loaded at the start of main()
 
     # ---- dispatch subcommands ----
     if args.command == "plugins":
@@ -510,18 +510,25 @@ def main() -> None:
     # ---- shell command mode ----
     if getattr(args, "shell", False):
         description = args.query or ""
+        has_stdin = not sys.stdin.isatty()
         if not description:
             stdin_text = _read_stdin()
             description = stdin_text or ""
         if not description:
             print_error("Provide a description: mayai --shell 'find large files'")
             sys.exit(1)
+            
+        auto_confirm = getattr(args, "yes", False)
+        if has_stdin and auto_confirm:
+            print_warning("Cannot use --yes when piping input to --shell. Forcing manual confirmation.")
+            auto_confirm = False
+            
         run_shell_mode(
             description=description,
             provider=provider,
             provider_name=provider_name,
             model=model,
-            auto_confirm=getattr(args, "yes", False),
+            auto_confirm=auto_confirm,
         )
         return
 
