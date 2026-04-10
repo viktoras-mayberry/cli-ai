@@ -10,7 +10,8 @@ Chat with OpenAI, Anthropic (Claude), Google Gemini, Perplexity, Groq, or local 
 - **Multi-turn chat**: full conversation history in interactive REPL mode
 - **Session persistence**: save, load, and resume conversations across restarts
 - **Conversation branching**: fork any conversation to explore alternative paths
-- **SQLite history log**: every query logged locally — searchable, filterable, with stats
+- **Autonomous Agent Mode**: let the AI actively navigate, read files, edit code, and run tests via self-directed loops
+- **SQLite history log**: every log locally — searchable, filterable, with stats
 - **Shell command mode**: describe what you want in English, get a shell command to confirm and run
 - **Pipe-friendly output**: `--raw` for plain text piping, `--json` for structured output
 - **File / stdin input**: pipe any file directly into your query
@@ -241,6 +242,22 @@ mayai --shell "compress this folder into a zip" --yes -p groq
 
 Works on Windows, macOS, and Linux — MAYAI detects your OS and shell automatically.
 
+## Agent Mode (Autonomous Workflows)
+
+You can allow MAYAI to autonomously resolve engineering problems using its tool ecosystem by activating Agent Mode:
+
+```bash
+mayai --agent
+```
+
+When Agent Mode is enabled, the CLI injects capabilities to parse programmatic `<tool_call>` outputs from models, pausing generation, executing the action, and providing the response silently back to the AI.
+This means you can provide a high-level task like `"Refactor auth.py and fix any pytest failures"` and watch the agent:
+1. Call `file_read` to inspect `auth.py`
+2. Call `file_edit` to dynamically rewrite broken lines
+3. Call `bash` to execute `pytest`
+
+**Safety Note:** Although MAYAI has native `bash` access in Agent Mode, it employs a strict manual permission bridge. The REPL pauses and prompts you with the exact command to review before continuing any `bash` tool execution.
+
 ## History Log
 
 Every query is automatically saved to a local SQLite database (`~/.config/mayai/history.db`). Nothing is sent anywhere — it's entirely local.
@@ -441,7 +458,7 @@ No API key needed for local models.
 
 ```
 mayai [query] [-p PROVIDER] [-m MODEL] [-s SESSION] [-P PATTERN]
-              [--raw | --json] [--shell] [--yes] [--estimate] [-v]
+              [--raw | --json] [--shell] [--yes] [--estimate] [--agent] [-v]
 mayai models [-p PROVIDER]
 mayai patterns
 mayai sessions [delete <name>]

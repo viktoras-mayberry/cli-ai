@@ -45,6 +45,7 @@ class REPLSession:
         config: Config,
         session_name: str = "",
         pattern_name: str = "",
+        agent_mode: bool = False,
     ) -> None:
         self._provider = provider
         self._provider_name = provider_name
@@ -52,6 +53,20 @@ class REPLSession:
         self._session_name = session_name
         self._pattern_name = pattern_name
         self._system_prompt = config.get_system_prompt()
+        self._agent_mode = agent_mode
+        if self._agent_mode:
+            agent_instructions = (
+                "\n\nYou are operating in AGENT MODE with access to tools.\n"
+                "To use a tool, you MUST output a section exactly matching this format:\n"
+                "<tool_call>\n<name>tool_name</name>\n<args>arg1 arg2...</args>\n</tool_call>\n"
+                "Available tools:\n"
+                "- file_read: args is the simple filepath.\n"
+                "- file_edit: args are exactly `<filename> <search_text> ||| <replace_text>`. Extremely important: Include exact leading/trailing whitespaces. Do not use markdown backticks around the code blocks in the search and replace texts.\n"
+                "- bash: args form the terminal command.\n"
+                "After the tool executes, its standard output will be passed back to you as a user message."
+            )
+            self._system_prompt += agent_instructions
+
         self._conversation = Conversation(system_prompt=self._system_prompt)
 
         # Cost tracking
@@ -414,22 +429,28 @@ class REPLSession:
             self._pattern_name,
         )
 
+        pending_agent_input: str | None = None
+
         while True:
-            try:
-                print_user_prompt(self._provider_name, self._provider.model)
-                user_input = input().strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                self._auto_save_on_exit()
-                print("Exiting MAYAI. Goodbye!")
-                break
+            if pending_agent_input is not None:
+                user_input = pending_agent_input
+                pending_agent_input = None
+            else:
+                try:
+                    print_user_prompt(self._provider_name, self._provider.model)
+                    user_input = input().strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    self._auto_save_on_exit()
+                    print("Exiting MAYAI. Goodbye!")
+                    break
 
-            if not user_input:
-                continue
+                if not user_input:
+                    continue
 
-            if user_input.startswith("/"):
-                self._handle_command(user_input)
-                continue
+                if user_input.startswith("/"):
+                    self._handle_command(user_input)
+                    continue
 
             # Count input tokens before sending
             self._conversation.add_user(user_input)
@@ -492,3 +513,24 @@ class REPLSession:
                 output_tokens=output_tokens,
                 cost_usd=cost,
             )
+
+            if getattr(self, "_agent_mode", False):
+                import re
+                match = re.search(r"<tool_call>\s*<name>(.*?)</name>\s*<args>(.*?)</args>\s*</tool_call>", full_response, re.DOTALL)
+                if match:
+                    tool_name = match.group(1).strip()
+                    tool_args_str = match.group(2)
+                    from .tools import get_tool
+                    reg = get_tool(tool_name)
+                    if reg:
+                        print_info(f"\n[bold magenta]Agent Executing Tool:[/bold magenta] {tool_name}")
+                        try:
+                            out = reg.tool.run_repl([tool_args_str], self)
+                            tool_output = out if out else "Execution finished with no output."
+                        except Exception as e:
+                            tool_output = f"Tool crashed: {e}"
+                    else:
+                        tool_output = f"Error: Tool '{tool_name}' not found."
+                        
+                    pending_agent_input = f"<tool_response>\n{tool_output}\n</tool_response>"
+                    print_info(f"[dim]Passing output back to agent...[/dim]\n")

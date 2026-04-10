@@ -171,7 +171,7 @@ def _cmd_models(args: argparse.Namespace, config: Config) -> None:
             if name == "ollama":
                 print_models_table(name, ["(run 'mayai models -p ollama' to list local models)"], "")
             else:
-                print_models_table(name, cls.MODELS or ["(dynamic)"], cls.default_model)
+                print_models_table(name, getattr(cls, "MODELS", ["(dynamic)"]), cls.default_model)
 
 
 def _cmd_patterns(args: argparse.Namespace, config: Config) -> None:
@@ -427,6 +427,10 @@ def main() -> None:
         help="Show token/cost estimate before sending. Prompts for confirmation.",
     )
     parser.add_argument(
+        "--agent", action="store_true",
+        help="Enable agent mode (loop autonomously with tools).",
+    )
+    parser.add_argument(
         "-v", "--verbose", action="store_true",
         help="Enable debug logging",
     )
@@ -537,10 +541,10 @@ def main() -> None:
 
     # ---- single-shot mode ----
     if args.query or stdin_content:
+        pat = config.get_pattern(pattern_name) if pattern_name else None
         system_prompt = (
-            config.get_pattern(pattern_name).get("system_prompt")
-            if pattern_name and config.get_pattern(pattern_name)
-            else config.get_system_prompt()
+            str(pat.get("system_prompt", config.get_system_prompt()))
+            if pat else config.get_system_prompt()
         )
 
         conversation = Conversation(system_prompt=system_prompt)
@@ -629,6 +633,7 @@ def main() -> None:
             config=config,
             session_name=session_name,
             pattern_name=pattern_name,
+            agent_mode=getattr(args, "agent", False),
         )
         for msg in preloaded_messages:
             if msg["role"] == "user":

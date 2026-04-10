@@ -68,11 +68,13 @@ class AnthropicProvider(BaseProvider):
         client = _anthropic.Anthropic(api_key=self.api_key)
 
         try:
+            from typing import Any
+            stream: Any
             with client.messages.stream(
                 model=self.model,
                 max_tokens=8192,
                 system=resolved_system or "Be precise and concise.",
-                messages=chat_messages,
+                messages=chat_messages,  # type: ignore
             ) as stream:
                 for text_chunk in stream.text_stream:
                     yield text_chunk
