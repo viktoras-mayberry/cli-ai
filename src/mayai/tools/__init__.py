@@ -10,9 +10,3 @@ __all__ = [
     "get_tools",
     "register_tool",
 ]
-
-from .agent_tools import FileReadTool, BashTool, FileEditTool
-register_tool("file_read", FileReadTool, source="core")
-register_tool("bash", BashTool, source="core")
-register_tool("file_edit", FileEditTool, source="core")
-

@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import __version__
 from .config import CONFIG_FILE, Config
@@ -358,6 +359,14 @@ def main() -> None:
     # --- patterns ---
     subparsers.add_parser("patterns", help="List prompt patterns")
 
+    # --- setup ---
+    subparsers.add_parser("setup", help="Interactive setup wizard (guided API key configuration)")
+
+    # --- index ---
+    index_parser = subparsers.add_parser("index", help="Build file search index for a directory")
+    index_parser.add_argument("directory", nargs="?", default=str(Path.home()),
+                              help="Directory to index (default: home directory)")
+
     # --- history ---
     history_parser = subparsers.add_parser("history", help="Browse and search query history")
     history_sub = history_parser.add_subparsers(dest="history_action")
@@ -427,8 +436,16 @@ def main() -> None:
         help="Show token/cost estimate before sending. Prompts for confirmation.",
     )
     parser.add_argument(
-        "--agent", action="store_true",
-        help="Enable agent mode (loop autonomously with tools).",
+        "--compare", action="store_true",
+        help="Ask multiple AI models and compare their answers side by side.",
+    )
+    parser.add_argument(
+        "--research", action="store_true",
+        help="Search the web and get an answer with cited sources (uses Perplexity).",
+    )
+    parser.add_argument(
+        "--find", action="store_true",
+        help="Search for files on your computer by description.",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -452,6 +469,10 @@ def main() -> None:
     # Config is now loaded at the start of main()
 
     # ---- dispatch subcommands ----
+    if args.command == "setup":
+        from .setup_wizard import run_setup_wizard
+        run_setup_wizard()
+        return
     if args.command == "plugins":
         _cmd_plugins()
         return
@@ -472,6 +493,13 @@ def main() -> None:
         return
     if args.command == "history":
         _cmd_history(args)
+        return
+    if args.command == "index":
+        from .finder import index_directory
+        directory = getattr(args, "directory", str(Path.home()))
+        print_info(f"Indexing files in: {directory}")
+        count = index_directory(directory, verbose=True)
+        print_success(f"Indexed {count} file(s). Use --find to search content.")
         return
 
     # ---- resolve provider ----
@@ -534,6 +562,55 @@ def main() -> None:
             model=model,
             auto_confirm=auto_confirm,
         )
+        return
+
+    # ---- find mode ----
+    if getattr(args, "find", False):
+        query = args.query or ""
+        if not query:
+            print_error("Provide a description: mayai --find 'tax documents from 2025'")
+            sys.exit(1)
+        from .finder import search_files
+        from .display import print_file_results
+        results = search_files(query)
+        print_file_results(results)
+        return
+
+    # ---- research mode ----
+    if getattr(args, "research", False):
+        question = args.query or ""
+        if not question:
+            stdin_text = _read_stdin()
+            question = stdin_text or ""
+        if not question:
+            print_error("Provide a question: mayai --research 'What is quantum computing?'")
+            sys.exit(1)
+        from .research import run_research
+        from .display import print_research_result
+        try:
+            answer, citations = run_research(question, config)
+            print_research_result(answer, citations)
+        except RuntimeError as exc:
+            print_error(str(exc))
+            sys.exit(1)
+        return
+
+    # ---- compare mode ----
+    if getattr(args, "compare", False):
+        question = args.query or ""
+        if not question:
+            stdin_text = _read_stdin()
+            question = stdin_text or ""
+        if not question:
+            print_error("Provide a question: mayai --compare 'Explain quantum computing'")
+            sys.exit(1)
+        from .compare import compare_providers
+        from .display import print_comparison
+        results = compare_providers(question, config)
+        if not results:
+            print_error("No providers have API keys configured.")
+            sys.exit(1)
+        print_comparison(results)
         return
 
     # ---- read stdin ----
@@ -633,7 +710,6 @@ def main() -> None:
             config=config,
             session_name=session_name,
             pattern_name=pattern_name,
-            agent_mode=getattr(args, "agent", False),
         )
         for msg in preloaded_messages:
             if msg["role"] == "user":

@@ -193,21 +193,25 @@ def print_patterns_table(patterns: dict) -> None:
 def print_banner(provider: str, model: str, session_name: str = "", pattern_name: str = "") -> None:
     extras = ""
     if session_name:
-        extras += f"\n[dim]Session: [bold]{session_name}[/bold][/dim]"
+        extras += f"\n  [dim]Session:[/dim] [bold]{session_name}[/bold]"
     if pattern_name:
-        extras += f"\n[dim]Pattern: [bold]{pattern_name}[/bold][/dim]"
+        extras += f"\n  [dim]Pattern:[/dim] [bold]{pattern_name}[/bold]"
     content = (
-        f"[bold white]Provider:[/bold white] [cyan]{provider}[/cyan]   "
-        f"[bold white]Model:[/bold white] [cyan]{model}[/cyan]{extras}\n\n"
-        "[dim]Commands: /clear  /switch <provider> [model]  /save [name]  "
-        "/load <name>  /sessions  /pattern <name>  /patterns  "
-        "/branch <name>  /checkout <name>  /branches  "
-        "/models  /history  /cost  /help  /exit[/dim]"
+        "[bold white]Welcome to MAYAI — your AI assistant[/bold white]\n\n"
+        f"  [dim]Provider:[/dim] [cyan]{provider}[/cyan]   "
+        f"[dim]Model:[/dim] [cyan]{model}[/cyan]{extras}\n\n"
+        "[bold white]What you can do:[/bold white]\n"
+        "  [bold cyan]Chat[/bold cyan]        Just type your question to start a conversation\n"
+        "  [bold cyan]/research[/bold cyan]   Search the web and get answers with sources\n"
+        "  [bold cyan]/compare[/bold cyan]    Ask multiple AI models at once and compare\n"
+        "  [bold cyan]/find[/bold cyan]       Search for files on your computer\n"
+        "  [bold cyan]/open[/bold cyan]       Read and summarize any file (PDF, Word, Excel...)\n"
+        "  [bold cyan]/help[/bold cyan]       See all commands\n"
     )
     console.print(
         Panel(
             content,
-            title="[bold magenta]MAYAI - Multi-provider AI CLI[/bold magenta]",
+            title="[bold magenta]MAYAI[/bold magenta]",
             border_style="magenta",
             padding=(1, 2),
         )
@@ -311,27 +315,134 @@ def print_stats(stats: dict) -> None:
 
 
 def print_help() -> None:
-    table = Table(show_header=True, header_style="bold cyan", title="Available Commands")
+    table = Table(show_header=True, header_style="bold cyan", title="MAYAI Commands")
     table.add_column("Command", style="bold yellow", no_wrap=True)
     table.add_column("Description")
-    rows = [
+
+    section_rows = [
+        ("[bold white]--- Core Features ---[/bold white]", ""),
+        ("/research <question>", "Search the web and get answers with cited sources"),
+        ("/compare <question>", "Ask multiple AI models and compare their answers"),
+        ("/find <description>", "Search for files on your computer"),
+        ("/open <filepath>", "Read any file (PDF, Word, Excel, images, text...)"),
+        ("/move <description>", "Move, rename, or organize files"),
+        ("/convert <file> to <format>", "Convert a file to another format"),
+        ("", ""),
+        ("[bold white]--- Chat ---[/bold white]", ""),
+        ("/use <provider> [model]", "Switch AI provider (e.g. /use claude, /use gpt)"),
+        ("/switch <provider> [model]", "Same as /use"),
         ("/clear", "Clear conversation history"),
-        ("/switch <provider> [model]", "Switch to a different provider (and optionally model)"),
-        ("/save [name]", "Save current conversation (auto-names if omitted)"),
+        ("/models", "List models for the current provider"),
+        ("/cost", "Show session token usage and cost estimate"),
+        ("", ""),
+        ("[bold white]--- Sessions ---[/bold white]", ""),
+        ("/save [name]", "Save current conversation"),
         ("/load <name>", "Load a saved conversation"),
         ("/sessions", "List all saved sessions"),
         ("/sessions delete <name>", "Delete a saved session"),
-        ("/branch <name>", "Fork current conversation into a new branch"),
+        ("/branch <name>", "Fork conversation into a new branch"),
         ("/checkout <name>", "Switch to a different branch"),
-        ("/branches", "List all branches in this session"),
-        ("/pattern <name>", "Apply a prompt pattern to this session"),
+        ("/branches", "List all branches"),
+        ("", ""),
+        ("[bold white]--- Other ---[/bold white]", ""),
+        ("/pattern <name>", "Apply a prompt pattern"),
         ("/patterns", "List all defined patterns"),
-        ("/models", "List models for the current provider"),
         ("/history", "Show conversation history"),
-        ("/cost", "Show session token usage and cost estimate"),
-        ("/help", "Show this help message"),
-        ("/exit  or  /quit", "Exit MAYAI (auto-saves conversation)"),
+        ("/help", "Show this message"),
+        ("/exit  or  /quit  or  /bye", "Exit MAYAI (auto-saves conversation)"),
     ]
-    for cmd, desc in rows:
+    for cmd, desc in section_rows:
         table.add_row(cmd, desc)
     console.print(table)
+
+
+def print_suggestions() -> None:
+    """Show contextual suggestions after a response."""
+    if is_silent():
+        return
+    console.print(
+        "[dim]Tip: /research for sourced answers | "
+        "/compare to ask multiple AIs | "
+        "/find to search your files[/dim]"
+    )
+
+
+def print_comparison(results: list[dict]) -> None:
+    """Display multi-model comparison results as Rich panels."""
+    if not results:
+        print_warning("No providers are configured with API keys. Run: mayai config init")
+        return
+
+    for result in results:
+        title = f"[bold]{result['provider']}[/bold] / {result['model']}"
+        if result.get("error"):
+            console.print(Panel(
+                f"[red]Error: {result['error']}[/red]",
+                title=title, border_style="red", padding=(1, 2),
+            ))
+        else:
+            response_text = result["response"] or "(empty response)"
+            console.print(Panel(
+                response_text,
+                title=title, border_style="cyan", padding=(1, 2),
+            ))
+
+
+def print_research_result(answer: str, citations: list[str] | None = None) -> None:
+    """Display a research answer with numbered source citations."""
+    console.print(Panel(
+        answer,
+        title="[bold green]Research Result[/bold green]",
+        border_style="green", padding=(1, 2),
+    ))
+    if citations:
+        sources_text = "\n".join(
+            f"  [bold cyan][{i + 1}][/bold cyan] {url}"
+            for i, url in enumerate(citations)
+        )
+        console.print(Panel(
+            sources_text,
+            title=f"[bold cyan]Sources ({len(citations)})[/bold cyan]",
+            border_style="cyan", padding=(1, 2),
+        ))
+
+
+def print_file_results(files: list[dict]) -> None:
+    """Display file search results in a table."""
+    if not files:
+        print_info("No files found matching your description.")
+        return
+    table = Table(title="Files Found", show_header=True, header_style="bold cyan")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("Name", style="bold white")
+    table.add_column("Path", style="dim")
+    table.add_column("Match", justify="center")
+    table.add_column("Snippet", style="white", max_width=48)
+    table.add_column("Size", justify="right")
+    table.add_column("Modified", no_wrap=True)
+    for i, f in enumerate(files, 1):
+        table.add_row(
+            str(i),
+            f.get("name", ""),
+            f.get("path", ""),
+            ("content" if f.get("match_type") == "content" else "name"),
+            (f.get("snippet", "") or "").replace(">>>", "[bold yellow]").replace("<<<", "[/bold yellow]"),
+            f.get("size", ""),
+            f.get("modified", ""),
+        )
+    console.print(table)
+
+
+def print_file_operation_preview(operations: list[dict]) -> None:
+    """Display a preview of file operations before confirmation."""
+    if not operations:
+        return
+    table = Table(title="Planned Operations", show_header=True, header_style="bold yellow")
+    table.add_column("Action", style="bold")
+    table.add_column("From")
+    table.add_column("To")
+    for op in operations:
+        table.add_row(op.get("action", ""), op.get("source", ""), op.get("dest", ""))
+    console.print(table)
+
+

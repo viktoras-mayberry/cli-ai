@@ -26,6 +26,7 @@ from .display import (
     print_sessions_table,
     print_stream_chunk,
     print_success,
+    print_suggestions,
     print_user_prompt,
     print_warning,
 )
@@ -45,7 +46,6 @@ class REPLSession:
         config: Config,
         session_name: str = "",
         pattern_name: str = "",
-        agent_mode: bool = False,
     ) -> None:
         self._provider = provider
         self._provider_name = provider_name
@@ -53,21 +53,9 @@ class REPLSession:
         self._session_name = session_name
         self._pattern_name = pattern_name
         self._system_prompt = config.get_system_prompt()
-        self._agent_mode = agent_mode
-        if self._agent_mode:
-            agent_instructions = (
-                "\n\nYou are operating in AGENT MODE with access to tools.\n"
-                "To use a tool, you MUST output a section exactly matching this format:\n"
-                "<tool_call>\n<name>tool_name</name>\n<args>arg1 arg2...</args>\n</tool_call>\n"
-                "Available tools:\n"
-                "- file_read: args is the simple filepath.\n"
-                "- file_edit: args are exactly `<filename> <search_text> ||| <replace_text>`. Extremely important: Include exact leading/trailing whitespaces. Do not use markdown backticks around the code blocks in the search and replace texts.\n"
-                "- bash: args form the terminal command.\n"
-                "After the tool executes, its standard output will be passed back to you as a user message."
-            )
-            self._system_prompt += agent_instructions
 
         self._conversation = Conversation(system_prompt=self._system_prompt)
+        self._last_find_results: list[dict] = []
 
         # Cost tracking
         self._session_cost: float = 0.0
@@ -354,6 +342,143 @@ class REPLSession:
     def _cmd_branches(self) -> None:
         print_branches_table(self._conversation.branch_info())
 
+    # ------------------------------------------------------------------ #
+    # New feature commands (stubs for Phase 1-3 implementation)            #
+    # ------------------------------------------------------------------ #
+
+    def _cmd_research(self, args: list[str]) -> None:
+        if not args:
+            print_warning("Usage: /research <your question>")
+            print_info("Example: /research What are the latest treatments for diabetes?")
+            return
+        from .research import run_research
+        from .display import print_research_result
+        question = " ".join(args)
+        print_info("Researching... this may take a moment.")
+        try:
+            answer, citations = run_research(question, self._config)
+            print_research_result(answer, citations)
+        except RuntimeError as exc:
+            print_error(str(exc))
+        except Exception as exc:
+            print_error(f"Research failed: {exc}")
+
+    def _cmd_compare(self, args: list[str]) -> None:
+        if not args:
+            print_warning("Usage: /compare <your question>")
+            print_info("Example: /compare Explain quantum computing simply")
+            return
+        from .compare import compare_providers
+        from .display import print_comparison
+        question = " ".join(args)
+        print_info("Querying multiple providers... this may take a moment.")
+        results = compare_providers(question, self._config, self._system_prompt)
+        if not results:
+            print_warning(
+                "No providers have API keys configured. "
+                "Run 'mayai config set providers.<name>.api_key YOUR_KEY' to add one."
+            )
+            return
+        print_comparison(results)
+
+    def _cmd_find(self, args: list[str]) -> None:
+        if not args:
+            print_warning("Usage: /find <what you're looking for>")
+            print_info("Example: /find tax documents from 2025")
+            return
+        query = " ".join(args).strip()
+        if len(query.split()) < 2:
+            print_info(
+                "Can you add one more detail so I can search better?\n"
+                "Examples:\n"
+                "  /find \"bank statement 2025\"\n"
+                "  /find \"resume pdf\"\n"
+                "  /find \"project proposal docx\"\n"
+                "Helpful details: file type (pdf/docx/xlsx), year, folder, or a phrase inside the file."
+            )
+            return
+
+        from .finder import find_best_matches, _INDEX_DB
+        from .display import print_file_results
+        print_info(f"Searching for: {query}")
+        results = find_best_matches(query)
+        self._last_find_results = results[:]
+        print_file_results(results)
+        if not results:
+            # Conversational follow-up
+            print_info(
+                "I couldn’t find it yet.\n"
+                "A couple quick questions so I can narrow it down:\n"
+                "- Was it a PDF, a photo, or a Word document?\n"
+                "- Roughly what year did you get it?\n"
+                "- Where do you usually save it (Downloads, Documents, WhatsApp)?"
+            )
+            if not _INDEX_DB.exists():
+                print_info("If you want me to search inside documents too, run: `mayai index <folder>`")
+            return
+
+        # If we have multiple likely candidates, ask a clarifying question
+        exts = sorted({(r.get("extension") or "").lower() for r in results if r.get("extension")})
+        if len(results) > 6 and len(exts) > 1:
+            pretty = ", ".join(f".{e}" for e in exts[:6])
+            print_info(
+                "Quick check so I pick the right one:\n"
+                f"- Is it more likely a {pretty} file (PDF/photo/Word), or something else?\n"
+                "If you already see it in the list, just tell me the number."
+            )
+
+        print_info(
+            "Tell me what you want to do next (no file paths needed):\n"
+            "  - open 1\n"
+            "  - copy 1 to desktop\n"
+            "  - open 2\n"
+        )
+
+    def _cmd_open(self, args: list[str]) -> None:
+        if not args:
+            print_warning("Usage: /open <filepath>")
+            print_info("Example: /open ~/Documents/report.pdf")
+            return
+        filepath = " ".join(args)
+        from .fileops import open_in_default_app
+        print_info("Opening it for you...")
+        if open_in_default_app(filepath):
+            print_success("Opened in your default app.")
+
+    def _cmd_move(self, args: list[str]) -> None:
+        if not args:
+            print_warning("Usage: /move <source_file_or_dir> <destination_dir>")
+            print_info("Example: /move ~/Downloads/invoice.pdf ~/Documents/Tax/")
+            return
+        if len(args) < 2:
+            print_warning("Provide both source and destination: /move <source> <dest>")
+            return
+        from .fileops import move_files
+        sources = args[:-1]
+        dest = args[-1]
+        move_files(sources, dest)
+
+    def _cmd_convert(self, args: list[str]) -> None:
+        if not args:
+            print_warning("Usage: /convert <filepath> to <format>")
+            print_info("Example: /convert report.docx to txt")
+            return
+        if "to" in args:
+            idx = args.index("to")
+            filepath = " ".join(args[:idx])
+            target_fmt = args[idx + 1] if idx + 1 < len(args) else ""
+        elif len(args) >= 2:
+            filepath = args[0]
+            target_fmt = args[-1]
+        else:
+            print_warning("Usage: /convert <filepath> to <format>")
+            return
+        if not target_fmt:
+            print_warning("Specify target format: /convert file.csv to xlsx")
+            return
+        from .converter import convert_file
+        convert_file(filepath, target_fmt)
+
     def _cmd_exit(self, _: list[str]) -> None:
         self._auto_save_on_exit()
         print("\nExiting MAYAI. Goodbye!")
@@ -394,21 +519,30 @@ class REPLSession:
         dispatch = {
             "/exit":     self._cmd_exit,
             "/quit":     self._cmd_exit,
+            "/bye":      self._cmd_exit,
             "/clear":    lambda _: self._cmd_clear(),
             "/models":   lambda _: self._cmd_models(),
             "/history":  lambda _: self._cmd_history(),
             "/help":     lambda _: self._cmd_help(),
             "/cost":     lambda _: self._cmd_cost(),
             "/switch":   self._cmd_switch,
+            "/use":      self._cmd_switch,
             "/tool":     self._cmd_tool,
             "/save":     self._cmd_save,
             "/load":     self._cmd_load,
             "/sessions": self._cmd_sessions,
             "/pattern":  self._cmd_pattern,
+            "/mode":     self._cmd_pattern,
             "/patterns": lambda _: self._cmd_patterns(),
             "/branch":   self._cmd_branch,
             "/checkout": self._cmd_checkout,
             "/branches": lambda _: self._cmd_branches(),
+            "/research": self._cmd_research,
+            "/compare":  self._cmd_compare,
+            "/find":     self._cmd_find,
+            "/open":     self._cmd_open,
+            "/move":     self._cmd_move,
+            "/convert":  self._cmd_convert,
         }
 
         handler = dispatch.get(cmd)
@@ -429,28 +563,57 @@ class REPLSession:
             self._pattern_name,
         )
 
-        pending_agent_input: str | None = None
-
         while True:
-            if pending_agent_input is not None:
-                user_input = pending_agent_input
-                pending_agent_input = None
-            else:
-                try:
-                    print_user_prompt(self._provider_name, self._provider.model)
-                    user_input = input().strip()
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    self._auto_save_on_exit()
-                    print("Exiting MAYAI. Goodbye!")
-                    break
+            try:
+                print_user_prompt(self._provider_name, self._provider.model)
+                user_input = input().strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                self._auto_save_on_exit()
+                print("Exiting MAYAI. Goodbye!")
+                break
 
-                if not user_input:
+            if not user_input:
+                continue
+
+            # Conversational selection shortcuts after /find
+            lowered = user_input.strip().lower()
+            if self._last_find_results:
+                import re
+                m_open = re.match(r"^(open|show)\s+(\d+)\s*$", lowered)
+                m_copy = re.match(r"^(copy|export)\s+(\d+)\s+(to\s+)?(desktop)\s*$", lowered)
+                m_just_num = re.match(r"^(\d+)\s*$", lowered)
+
+                if m_open or m_just_num:
+                    idx = int((m_open.group(2) if m_open else m_just_num.group(1))) - 1
+                    if 0 <= idx < len(self._last_find_results):
+                        path = self._last_find_results[idx].get("path", "")
+                        if path:
+                            from .fileops import open_in_default_app
+                            print_info("Opening it for you...")
+                            if open_in_default_app(path):
+                                print_success("Opened in your default app.")
+                                continue
+                    print_warning("I couldn't open that selection. Try another number from the list.")
                     continue
 
-                if user_input.startswith("/"):
-                    self._handle_command(user_input)
+                if m_copy:
+                    idx = int(m_copy.group(2)) - 1
+                    if 0 <= idx < len(self._last_find_results):
+                        path = self._last_find_results[idx].get("path", "")
+                        if path:
+                            from .fileops import copy_to_desktop
+                            print_info("Copying to your Desktop...")
+                            out = copy_to_desktop(path)
+                            if out:
+                                print_success(f"Copied to Desktop: {out}")
+                                continue
+                    print_warning("I couldn't copy that selection. Try another number from the list.")
                     continue
+
+            if user_input.startswith("/"):
+                self._handle_command(user_input)
+                continue
 
             # Count input tokens before sending
             self._conversation.add_user(user_input)
@@ -514,23 +677,7 @@ class REPLSession:
                 cost_usd=cost,
             )
 
-            if getattr(self, "_agent_mode", False):
-                import re
-                match = re.search(r"<tool_call>\s*<name>(.*?)</name>\s*<args>(.*?)</args>\s*</tool_call>", full_response, re.DOTALL)
-                if match:
-                    tool_name = match.group(1).strip()
-                    tool_args_str = match.group(2)
-                    from .tools import get_tool
-                    reg = get_tool(tool_name)
-                    if reg:
-                        print_info(f"\n[bold magenta]Agent Executing Tool:[/bold magenta] {tool_name}")
-                        try:
-                            out = reg.tool.run_repl([tool_args_str], self)
-                            tool_output = out if out else "Execution finished with no output."
-                        except Exception as e:
-                            tool_output = f"Tool crashed: {e}"
-                    else:
-                        tool_output = f"Error: Tool '{tool_name}' not found."
-                        
-                    pending_agent_input = f"<tool_response>\n{tool_output}\n</tool_response>"
-                    print_info(f"[dim]Passing output back to agent...[/dim]\n")
+            # Show tips on first few exchanges
+            if self._session_input_tokens > 0 and len(self._conversation.get_messages()) <= 4:
+                print_suggestions()
+

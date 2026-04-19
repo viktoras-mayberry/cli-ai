@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "mayai"
 version = "0.1.0"
-description = "MAYAI - Multi-provider AI CLI (OpenAI, Anthropic, Gemini, Perplexity, Groq, Ollama)"
+description = "MAYAI - Your AI assistant in the terminal. Chat, research with sources, find and manage files, compare AI models."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 authors = [{ name = "MAYAI" }]
-keywords = ["ai", "cli", "llm", "openai", "anthropic", "gemini", "perplexity", "groq", "ollama"]
+keywords = ["ai", "cli", "llm", "assistant", "research", "file-manager", "openai", "anthropic", "gemini", "perplexity"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3 :: Only",
@@ -29,6 +29,12 @@ dependencies = [
     "rich>=13.0.0",
     "tomli-w>=1.0.0",
 ]
+
+[project.optional-dependencies]
+docs = ["pdfplumber>=0.10.0", "python-docx>=1.0.0", "openpyxl>=3.1.0", "reportlab>=4.0.0"]
+images = ["Pillow>=10.0.0"]
+detect = ["chardet>=5.0.0"]
+all = ["mayai[docs,images,detect]"]
 
 [project.urls]
 Repository = "https://github.com/viktoras-mayberry/cli-ai"
