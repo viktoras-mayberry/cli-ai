@@ -1,35 +1,47 @@
-# MAYAI — Your AI Assistant in the Terminal
+# MAYAI — A Research Assistant That Lives in Your Terminal
 
-Chat with AI, research topics with cited sources, find and manage files on your computer, and compare answers from multiple AI models — all from one simple command.
+**MAYAI is a CLI-native, local-first research assistant for students, researchers, and anyone who does serious thinking with their computer.** Point it at your own papers and documents, query them with any AI model (including offline via Ollama), cross-check answers across models to catch hallucinations, and keep your work on your machine.
+
+## Why MAYAI
+
+Most AI research tools — Elicit, NotebookLM, Consensus, Perplexity — are cloud-only web apps. That means:
+
+- Your unpublished drafts get uploaded to someone else's servers
+- You can't script them into pipelines or pipe output into other tools
+- You're paying a subscription to ask questions about files you already own
+- Only one model answers — no way to catch when it invents a citation
+
+MAYAI takes a different shape. It runs in the terminal (where scripting is free), it works with local models (where your data never leaves the machine), and it can ask the same question to multiple providers so you can see where they disagree. It won't replace NotebookLM for everyone — it's for people who'd rather own their workflow than rent it.
 
 ## What Can MAYAI Do?
 
-### Chat with AI
-Talk to powerful AI models (GPT-4, Claude, Gemini, and more) directly from your terminal. No browser tabs needed.
-
-```bash
-mayai "What's the best way to organize my photos?"
-```
-
-### Research with Sources
-Ask a question and get an answer backed by real web sources — perfect for students and researchers.
+### Research with Cited Sources
+Ask a question and get an answer backed by real web sources. Good for literature reviews, fact-checking, and getting oriented in a new topic.
 
 ```bash
 mayai --research "What are the latest treatments for type 2 diabetes?"
 ```
 
-### Find Files on Your Computer
-Describe what you're looking for in plain English. MAYAI searches your files by name, type, and date.
+### Compare Models to Catch Hallucinations
+Ask the same research question to multiple providers at once. If GPT-4 and Claude agree, that's signal. If they disagree, that's where you dig in.
+
+```bash
+mayai --compare "Explain the latest evidence on semaglutide for cardiovascular risk"
+```
+
+### Find Files You Already Have
+Describe what you're looking for in plain English. MAYAI searches your files by name, type, date — and optionally the contents of indexed folders.
 
 ```bash
 mayai --find "tax documents from 2025"
+mayai index ~/Documents   # enables content search
 ```
 
-### Compare AI Models
-Ask the same question to multiple AI models at once and see how their answers differ.
+### Chat with Any Model
+Full multi-turn chat against OpenAI, Anthropic, Gemini, Perplexity, Groq, or a local Ollama model. Switch providers mid-conversation.
 
 ```bash
-mayai --compare "Explain quantum computing in simple terms"
+mayai "summarize the key argument in the paper I just opened"
 ```
 
 ### Read Any File
